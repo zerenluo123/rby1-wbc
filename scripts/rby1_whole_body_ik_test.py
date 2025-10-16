@@ -2,12 +2,12 @@ import os
 import sys
 import numpy as np
 import mujoco
-
+from pathlib import Path
 
 # Ensure local imports work when executing from the repo root
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-if CURRENT_DIR not in sys.path:
-    sys.path.insert(0, CURRENT_DIR)
+_THIS_DIR = Path(__file__).resolve().parent
+if str(_THIS_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(_THIS_DIR.parent))
 
 from ik.rby1_whole_body_ik import RBY1WholeBodyIK  # noqa: E402
 
@@ -19,7 +19,7 @@ def main(num_trials: int = 10, pos_noise: float = 0.05, seed: int = 0) -> int:
     solver = RBY1WholeBodyIK()
 
     # Load an independent MuJoCo model for FK evaluation
-    model_path = os.path.join(CURRENT_DIR, "xml", "rby1", "model_act_consolidated.xml")
+    model_path = os.path.join(_THIS_DIR.parent, "model", "rby1", "rby1.xml")
     fk_model = mujoco.MjModel.from_xml_path(model_path)
     fk_data = mujoco.MjData(fk_model)
 

@@ -137,6 +137,11 @@ class RBY1WholeBodyIK:
         ]
 
         self.environment_geoms = None
+        # Limits cache (built once and reused to avoid per-iteration overhead)
+        self._cached_limits = None
+        self._cached_tasks = None
+        self._build_limits_cache()
+        self._build_tasks_cache()
     
     def _setup_joint_indices(self):
         """Setup joint indices for different robot parts."""
@@ -235,7 +240,7 @@ class RBY1WholeBodyIK:
         tasks = []
         limits = []
         
-        # 1. End-effector tasks (highest priority)
+        # End-effector tasks (highest priority)
         if left_target_pos is not None:
             left_ee_task = mink.FrameTask(
                 frame_name=self.left_ee_name,
@@ -270,7 +275,7 @@ class RBY1WholeBodyIK:
             right_ee_task.set_target(mink.SE3.from_matrix(target_matrix))
             tasks.append(right_ee_task)
         
-        # 2. Base ground constraint (very high priority - base must stay on ground)
+        # Base ground constraint (very high priority - base must stay on ground)
         # Constrain base Z position to 0 and only allow yaw rotation
         base_ground_task = mink.FrameTask(
             frame_name=self.base_name,
@@ -299,40 +304,7 @@ class RBY1WholeBodyIK:
         base_ground_task.set_target(mink.SE3.from_matrix(base_target_matrix))
         tasks.append(base_ground_task)
         
-        # 3. Upper body upright orientation (STRONG constraint for stability)
-        # Constrain torso_5 link to point upward - CRITICAL for preventing falls
-        torso_upright_task = mink.FrameTask(
-            frame_name=self.torso5_name,
-            frame_type="body",
-            position_cost=0.0,  # Don't constrain position
-            orientation_cost=TORSO_UPRIGHT_ORI_COST,  # STRONG constraint to maintain upright posture
-            lm_damping=1e-4,
-        )
-        # Set target to upright orientation (identity rotation)
-        upright_matrix = np.eye(4)
-        upright_matrix[:3, 3] = [0, 0, 1.0]  # Dummy position (not used due to position_cost=0)
-        torso_upright_task.set_target(mink.SE3.from_matrix(upright_matrix))
-        tasks.append(torso_upright_task)
-        
-        # 3. COM stability constraint (medium regularization)
-        # This is approximated by keeping torso_5 position within base support polygon
-        # We use a relative position task between torso and base
-        com_stability_task = mink.RelativeFrameTask(
-            frame_name=self.torso5_name,
-            frame_type="body",
-            root_name=self.base_name,
-            root_type="body",
-            position_cost=COM_OVER_BASE_POS_COST,  # Medium cost for stability
-            orientation_cost=0.0,  # Don't constrain relative orientation
-            lm_damping=1e-4,
-        )
-        # Target: torso should be above base center with some tolerance
-        relative_matrix = np.eye(4)
-        relative_matrix[:3, 3] = [0, 0, 0.8]  # Torso approximately 0.8m above base
-        com_stability_task.set_target(mink.SE3.from_matrix(relative_matrix))
-        tasks.append(com_stability_task)
-        
-        # 4. Main posture task
+        # Main posture task
         posture_task = mink.PostureTask(
             model=self.model,
             cost=POSTURE_COST_MAIN  
@@ -342,7 +314,7 @@ class RBY1WholeBodyIK:
         posture_task.set_target(reference_qpos)
         tasks.append(posture_task)
 
-        # 5. Torso movement penalty task
+        # Torso movement penalty task
         # Define preferred ranges for torso joints (in radians)
         # torso_1: -10° to 45° = -0.175 to 0.785 rad
         # torso_2: -90° to 10° = -1.571 to 0.175 rad  
@@ -364,79 +336,11 @@ class RBY1WholeBodyIK:
         posture_task.set_target(reference_qpos)
         tasks.append(posture_task)
 
-        # Limits
-        # 6. Collision avoidance limits using Mink's built-in functionality
-        base_group = {"base_col_0", "base_col_1"}
+        # Extend with cached tasks
+        tasks.extend(self._cached_tasks)
 
-        torso_0_group = {"torso_0_col_0", "torso_0_col_1"}
-        torso_1_group = {"torso_1_col_0", "torso_1_col_1", "torso_1_col_2", "torso_1_col_3", "torso_1_col_4", "torso_1_col_5", "torso_1_col_6", "torso_1_col_7", "torso_1_col_8", "torso_1_col_9", "torso_1_col_10"}
-        torso_2_group = {"torso_2_col_0", "torso_2_col_1", "torso_2_col_2", "torso_2_col_3", "torso_2_col_4", "torso_2_col_5", "torso_2_col_6", "torso_2_col_7", "torso_2_col_8", "torso_2_col_9", "torso_2_col_10"}
-        torso_4_group = {"torso_4_col_0", "torso_4_col_1", "torso_4_col_2", "torso_4_col_3"}
-        torso_5_group = {"torso_5_col_0", "torso_5_col_1", "torso_5_col_2", "torso_5_col_3", "torso_5_col_4", "torso_5_col_5"}
-
-        right_arm_0_group = {"right_arm_0_col_0", "right_arm_0_col_1", "right_arm_0_col_2"}
-        right_arm_1_group = {"right_arm_1_col_0"}
-        right_arm_2_group = {"right_arm_2_col_0", "right_arm_2_col_1", "right_arm_2_col_2", "right_arm_2_col_3", "right_arm_2_col_4", "right_arm_2_col_5", "right_arm_2_col_6", "right_arm_2_col_7"}
-        right_arm_3_group = {"right_arm_3_col_0", "right_arm_3_col_1", "right_arm_3_col_2", "right_arm_3_col_3"}
-        right_arm_4_group = {"right_arm_4_col_0", "right_arm_4_col_1", "right_arm_4_col_2", "right_arm_4_col_3", "right_arm_4_col_4"}
-        right_arm_5_group = {"right_arm_5_col_0", "right_arm_5_col_1", "right_arm_5_col_2"}
-        right_arm_6_group = {"right_arm_6_col_0"}
-        right_arm_7_group = {"right_arm_7_col_0"}
-        right_ee_group = {"right_ee_col_0", "right_ee_col_1", "right_ee_col_2", "right_ee_col_3", "right_ee_col_4"}
-
-        left_arm_0_group = {"left_arm_0_col_0", "left_arm_0_col_1", "left_arm_0_col_2"}
-        left_arm_1_group = {"left_arm_1_col_0"}
-        left_arm_2_group = {"left_arm_2_col_0", "left_arm_2_col_1", "left_arm_2_col_2", "left_arm_2_col_3", "left_arm_2_col_4", "left_arm_2_col_5", "left_arm_2_col_6", "left_arm_2_col_7"}
-        left_arm_3_group = {"left_arm_3_col_0", "left_arm_3_col_1", "left_arm_3_col_2", "left_arm_3_col_3"}
-        left_arm_4_group = {"left_arm_4_col_0", "left_arm_4_col_1", "left_arm_4_col_2", "left_arm_4_col_3", "left_arm_4_col_4"}
-        left_arm_5_group = {"left_arm_5_col_0", "left_arm_5_col_1", "left_arm_5_col_2"}
-        left_arm_6_group = {"left_arm_6_col_0"}
-        left_arm_7_group = {"left_arm_7_col_0"}
-        left_ee_group = {"left_ee_col_0", "left_ee_col_1", "left_ee_col_2", "left_ee_col_3", "left_ee_col_4"}
-
-        base_torso_group = base_group | torso_0_group | torso_1_group | torso_2_group | torso_4_group | torso_5_group
-        left_arm_group = left_arm_0_group | left_arm_1_group | left_arm_2_group | left_arm_3_group | left_arm_4_group | left_arm_5_group | left_arm_6_group | left_arm_7_group | left_ee_group
-        right_arm_group = right_arm_0_group | right_arm_1_group | right_arm_2_group | right_arm_3_group | right_arm_4_group | right_arm_5_group | right_arm_6_group | right_arm_7_group | right_ee_group
-
-        # Environment collision group - all robot collision geoms
-        robot_collision_group = base_torso_group | left_arm_group | right_arm_group
-
-        # Get environment collision geoms (non-robot geoms)
-        environment_geom_group = self._get_environment_geoms()
-
-        geom_pairs = [
-            (base_torso_group, left_arm_group),
-            (base_torso_group, right_arm_group),
-            (left_arm_group, right_arm_group),
-            (robot_collision_group, environment_geom_group),
-        ]
-
-        collision_avoidance_limit = mink.CollisionAvoidanceLimit(
-            model=self.model,
-            geom_pairs=geom_pairs,
-            minimum_distance_from_collisions=SAFETY_DISTANCE,
-            collision_detection_distance=INFLUENCE_DISTANCE,
-        )
-        limits.append(collision_avoidance_limit)
-
-        # 7. Configuration limit
-        limits.append(mink.ConfigurationLimit(self.model))
-
-        # 8. Joint velocity limit
-        joint_velocity_limits = copy.deepcopy(JOINT_VEL_LIMITS)
-        for i in joint_velocity_limits:
-            joint_velocity_limits[i] = joint_velocity_limits[i]
-        joint_velocity_limit = mink.VelocityLimit(self.model, joint_velocity_limits)
-        limits.append(joint_velocity_limit)
-
-        # 9. Base velocity limit
-        free_joint_velocity_limit = FreeJointVelocityLimit(
-            self.model,
-            self.base_joint_id,
-            ang_max=[0, 0, BASE_RZ_V_LIMIT], 
-            lin_max=[BASE_XY_V_LIMIT, BASE_XY_V_LIMIT, 0]
-        )
-        limits.append(free_joint_velocity_limit)
+        # Limits (cached to avoid per-call construction overhead)
+        limits.extend(self._cached_limits)
 
         # Solver parameters
         solver = "daqp"
@@ -610,3 +514,125 @@ class RBY1WholeBodyIK:
         return self.environment_geoms
 
     # Namespace detection/resolution not needed; model uses unprefixed names exclusively
+
+    def _build_limits_cache(self) -> None:
+        """Build once and cache all Mink limits to avoid per-solve construction overhead."""
+        # Collision avoidance limits using Mink's built-in functionality
+        base_group = {"base_col_0", "base_col_1"}
+
+        torso_0_group = {"torso_0_col_0", "torso_0_col_1"}
+        torso_1_group = {"torso_1_col_0", "torso_1_col_1", "torso_1_col_2", "torso_1_col_3", "torso_1_col_4", "torso_1_col_5", "torso_1_col_6", "torso_1_col_7", "torso_1_col_8", "torso_1_col_9", "torso_1_col_10"}
+        torso_2_group = {"torso_2_col_0", "torso_2_col_1", "torso_2_col_2", "torso_2_col_3", "torso_2_col_4", "torso_2_col_5", "torso_2_col_6", "torso_2_col_7", "torso_2_col_8", "torso_2_col_9", "torso_2_col_10"}
+        torso_4_group = {"torso_4_col_0", "torso_4_col_1", "torso_4_col_2", "torso_4_col_3"}
+        torso_5_group = {"torso_5_col_0", "torso_5_col_1", "torso_5_col_2", "torso_5_col_3", "torso_5_col_4", "torso_5_col_5"}
+
+        right_arm_0_group = {"right_arm_0_col_0", "right_arm_0_col_1", "right_arm_0_col_2"}
+        right_arm_1_group = {"right_arm_1_col_0"}
+        right_arm_2_group = {"right_arm_2_col_0", "right_arm_2_col_1", "right_arm_2_col_2", "right_arm_2_col_3", "right_arm_2_col_4", "right_arm_2_col_5", "right_arm_2_col_6", "right_arm_2_col_7"}
+        right_arm_3_group = {"right_arm_3_col_0", "right_arm_3_col_1", "right_arm_3_col_2", "right_arm_3_col_3"}
+        right_arm_4_group = {"right_arm_4_col_0", "right_arm_4_col_1", "right_arm_4_col_2", "right_arm_4_col_3", "right_arm_4_col_4"}
+        right_arm_5_group = {"right_arm_5_col_0", "right_arm_5_col_1", "right_arm_5_col_2"}
+        right_arm_6_group = {"right_arm_6_col_0"}
+        right_arm_7_group = {"right_arm_7_col_0"}
+        right_ee_group = {"right_ee_col_0", "right_ee_col_1", "right_ee_col_2", "right_ee_col_3", "right_ee_col_4"}
+
+        left_arm_0_group = {"left_arm_0_col_0", "left_arm_0_col_1", "left_arm_0_col_2"}
+        left_arm_1_group = {"left_arm_1_col_0"}
+        left_arm_2_group = {"left_arm_2_col_0", "left_arm_2_col_1", "left_arm_2_col_2", "left_arm_2_col_3", "left_arm_2_col_4", "left_arm_2_col_5", "left_arm_2_col_6", "left_arm_2_col_7"}
+        left_arm_3_group = {"left_arm_3_col_0", "left_arm_3_col_1", "left_arm_3_col_2", "left_arm_3_col_3"}
+        left_arm_4_group = {"left_arm_4_col_0", "left_arm_4_col_1", "left_arm_4_col_2", "left_arm_4_col_3", "left_arm_4_col_4"}
+        left_arm_5_group = {"left_arm_5_col_0", "left_arm_5_col_1", "left_arm_5_col_2"}
+        left_arm_6_group = {"left_arm_6_col_0"}
+        left_arm_7_group = {"left_arm_7_col_0"}
+        left_ee_group = {"left_ee_col_0", "left_ee_col_1", "left_ee_col_2", "left_ee_col_3", "left_ee_col_4"}
+
+        base_torso_group = base_group | torso_0_group | torso_1_group | torso_2_group | torso_4_group | torso_5_group
+        left_arm_group = left_arm_0_group | left_arm_1_group | left_arm_2_group | left_arm_3_group | left_arm_4_group | left_arm_5_group | left_arm_6_group | left_arm_7_group | left_ee_group
+        right_arm_group = right_arm_0_group | right_arm_1_group | right_arm_2_group | right_arm_3_group | right_arm_4_group | right_arm_5_group | right_arm_6_group | right_arm_7_group | right_ee_group
+
+        # Environment collision group - all robot collision geoms
+        robot_collision_group = base_torso_group | left_arm_group | right_arm_group
+
+        # Get environment collision geoms (non-robot geoms)
+        environment_geom_group = self._get_environment_geoms()
+
+        geom_pairs = [
+            (base_torso_group, left_arm_group),
+            (base_torso_group, right_arm_group),
+            (left_arm_group, right_arm_group),
+            (robot_collision_group, environment_geom_group),
+        ]
+
+        collision_avoidance_limit = mink.CollisionAvoidanceLimit(
+            model=self.model,
+            geom_pairs=geom_pairs,
+            minimum_distance_from_collisions=SAFETY_DISTANCE,
+            collision_detection_distance=INFLUENCE_DISTANCE,
+        )
+
+        # Configuration limit
+        configuration_limit = mink.ConfigurationLimit(self.model)
+
+        # Joint velocity limit
+        joint_velocity_limits = copy.deepcopy(JOINT_VEL_LIMITS)
+        joint_velocity_limit = mink.VelocityLimit(self.model, joint_velocity_limits)
+
+        # Base velocity limit
+        free_joint_velocity_limit = FreeJointVelocityLimit(
+            self.model,
+            self.base_joint_id,
+            ang_max=[0, 0, BASE_RZ_V_LIMIT],
+            lin_max=[BASE_XY_V_LIMIT, BASE_XY_V_LIMIT, 0],
+        )
+
+        self.collision_avoidance_limit = collision_avoidance_limit
+        self.configuration_limit = configuration_limit
+        self.joint_velocity_limit = joint_velocity_limit
+        self.base_velocity_limit = free_joint_velocity_limit
+
+        self._cached_limits = [
+            self.collision_avoidance_limit,
+            self.configuration_limit,
+            self.joint_velocity_limit,
+            self.base_velocity_limit,
+        ]
+
+    def _build_tasks_cache(self) -> None:
+        """Build once and cache all Mink tasks to avoid per-solve construction overhead."""
+        # Upper body upright orientation (STRONG constraint for stability)
+        # Constrain torso_5 link to point upward - CRITICAL for preventing falls
+        torso_upright_task = mink.FrameTask(
+            frame_name=self.torso5_name,
+            frame_type="body",
+            position_cost=0.0,  # Don't constrain position
+            orientation_cost=TORSO_UPRIGHT_ORI_COST,  # STRONG constraint to maintain upright posture
+            lm_damping=1e-4,
+        )
+        # Set target to upright orientation (identity rotation)
+        upright_matrix = np.eye(4)
+        upright_matrix[:3, 3] = [0, 0, 1.0]  # Dummy position (not used due to position_cost=0)
+        torso_upright_task.set_target(mink.SE3.from_matrix(upright_matrix))
+        
+        # COM stability constraint (medium regularization)
+        # This is approximated by keeping torso_5 position within base support polygon
+        # We use a relative position task between torso and base
+        com_stability_task = mink.RelativeFrameTask(
+            frame_name=self.torso5_name,
+            frame_type="body",
+            root_name=self.base_name,
+            root_type="body",
+            position_cost=COM_OVER_BASE_POS_COST,  # Medium cost for stability
+            orientation_cost=0.0,  # Don't constrain relative orientation
+            lm_damping=1e-4,
+        )
+        # Torso should be above base center with some tolerance
+        relative_matrix = np.eye(4)
+        relative_matrix[:3, 3] = [0, 0, 0.8]  # Torso approximately 0.8m above base
+        com_stability_task.set_target(mink.SE3.from_matrix(relative_matrix))
+
+        self._cached_tasks = [
+            torso_upright_task,
+            com_stability_task,
+        ]
+        
+

@@ -100,10 +100,10 @@ def main():
             r_err = float(np.linalg.norm(ee_r_pos - right_target))
 
             # Print to stdout (may not show under mjpython without flush)
-            print(
-                f"max_joint_vel={joint_max_vel:.3f} rad/s | base_xy={base_xy_speed:.3f} m/s | base_yaw={base_yaw_rate:.3f} rad/s | l_err={l_err:.3f} m | r_err={r_err:.3f} m",
-                flush=True,
-            )
+            # print(
+            #     f"max_joint_vel={joint_max_vel:.3f} rad/s | base_xy={base_xy_speed:.3f} m/s | base_yaw={base_yaw_rate:.3f} rad/s | l_err={l_err:.3f} m | r_err={r_err:.3f} m",
+            #     flush=True,
+            # )
 
             # Apply solution to viewer
             data.qpos[:] = sol_qpos
