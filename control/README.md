@@ -6,11 +6,16 @@ C++, exposes a small C++ executable (`rby1_realtime_control_main`), and ships a
 `pybind11` module (`rby1_controller`) for direct consumption from Python.
 
 ## Building
-
+## Need to install rby1-sdk first
 ```bash
 mkdir -p build && cd build
-cmake -DRBY1_SDK_ROOT=/path/to/rby1-sdk ..
+cmake .. -DRBY1_SDK_ROOT=/path/to/rby1-sdk/build -DCMAKE_BUILD_TYPE=Release -DRBY1_SDK_INCLUDE_DIR=/path/to/rby1-sdk/include   -DRBY1_SDK_LIBRARY=/path/to/rby1-sdk/build/src/librby1-sdk.so 
 cmake --build .
+
+# Add the following to the path for import
+export LD_LIBRARY_PATH=$HOME/dev/rby1/rby1-sdk/build/src:$LD_LIBRARY_PATH
+ls build | grep rby1_controller
+ln -s build/rby1_controller*.so rby1_controller.so
 ```
 
 If your SDK install uses non-standard paths, set `RBY1_SDK_INCLUDE_DIR` and
