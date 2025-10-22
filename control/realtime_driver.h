@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -23,7 +24,16 @@ class Rby1Component;
 class RealtimeDriver {
  public:
   struct RobotSnapshot {
+    int64_t timestamp_ns = 0;
+    std::vector<bool> joint_is_ready;
     std::vector<double> joint_position;
+    std::vector<double> joint_velocity;
+    std::vector<double> joint_current;
+    std::vector<double> joint_torque;
+    std::vector<double> joint_target_position;
+    std::vector<double> joint_target_velocity;
+    std::vector<double> joint_feedback_gain;
+    std::vector<double> joint_feedforward_torque;
     Eigen::Matrix3d odom_SE2 = Eigen::Matrix3d::Identity();
     bool is_valid = false;
   };

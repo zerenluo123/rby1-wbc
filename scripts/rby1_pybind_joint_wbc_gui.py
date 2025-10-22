@@ -235,6 +235,37 @@ class PybindSimGUI:
         mujoco.mj_forward(self.model, self.data)
         self.prev_qpos = self.data.qpos.copy()
 
+    def _snapshot_to_qpos(self, snapshot: RobotSnapshot) -> np.ndarray:
+        if not hasattr(self, "model") or self.model is None:
+            raise RuntimeError("MuJoCo model not initialized; cannot map snapshot to qpos.")
+
+        if hasattr(self, "prev_qpos") and self.prev_qpos is not None:
+            qpos = self.prev_qpos.copy()
+        else:
+            qpos = np.zeros(self.model.nq, dtype=float)
+
+        base_adr = getattr(self, "_base_free_adr", None)
+        base_origin = getattr(self, "_base_origin_pos", np.zeros(3, dtype=float))
+        if base_adr is not None:
+            T = snapshot.odom_SE2
+            x = float(T[0, 2])
+            y = float(T[1, 2])
+            yaw = math.atan2(T[1, 0], T[0, 0])
+            qpos[base_adr + 0] = base_origin[0] + x
+            qpos[base_adr + 1] = base_origin[1] + y
+            qpos[base_adr + 2] = base_origin[2]
+            qpos[base_adr + 3 : base_adr + 7] = self._quat_from_yaw(yaw)
+
+        joint_positions = snapshot.joint_position
+        mapping = getattr(self, "_sdk_to_mj_qadr", [])
+        count = min(len(joint_positions), len(mapping))
+        for idx in range(count):
+            adr = mapping[idx]
+            if adr is not None:
+                qpos[adr] = joint_positions[idx]
+
+        return qpos
+
     def site_pos(self, site_name: str, qpos: np.ndarray) -> np.ndarray:
         self.data.qpos[:] = qpos
         mujoco.mj_forward(self.model, self.data)
@@ -246,7 +277,32 @@ class PybindSimGUI:
         body_idx = [i for i, name in enumerate(self._sdk_joint_names) if not name.startswith("wheel_")]
 
         while not self._stop.is_set():
-            left_pos, left_quat, right_pos, right_quat, qpos_for_ik = self.shared.get_for_ik()
+            snapshot = self.robot_state.load()
+            qpos_from_snapshot: Optional[np.ndarray] = None
+            if (
+                snapshot is not None
+                and snapshot.is_valid
+                and hasattr(self, "model")
+                and self.model is not None
+            ):
+                try:
+                    qpos_from_snapshot = self._snapshot_to_qpos(snapshot)
+                except Exception as exc:  # pragma: no cover - defensive
+                    print(f"[controller] snapshot conversion error: {exc}")
+
+            left_pos, left_quat, right_pos, right_quat, qpos_viewer = self.shared.get_for_ik()
+            qpos_for_ik = qpos_from_snapshot if qpos_from_snapshot is not None else qpos_viewer
+
+            if isinstance(qpos_for_ik, RobotSnapshot):
+                try:
+                    qpos_for_ik = self._snapshot_to_qpos(qpos_for_ik)
+                except Exception as exc:  # pragma: no cover - defensive
+                    print(f"[controller] snapshot-to-qpos fallback error: {exc}")
+                    qpos_for_ik = None
+
+            if qpos_for_ik is not None and not isinstance(qpos_for_ik, np.ndarray):
+                qpos_for_ik = np.asarray(qpos_for_ik, dtype=float)
+
             if qpos_for_ik is None or left_pos is None or right_pos is None:
                 self.ik_rate.sleep()
                 continue

@@ -119,7 +119,6 @@ class Rby1Component {
     std::lock_guard<std::mutex> guard(command_mutex_);
     command_ = command;
     last_command_time_ = GetTimeUs<std::chrono::steady_clock>();
-    lpf_initialized_ = false;
     return true;
   }
 
@@ -141,29 +140,29 @@ class Rby1Component {
 
   void Apply(int64_t steady_now_us, rb::ControlInput<y1_instance>* control_input,
              double delta_time) {
-    std::optional<CommandData> command_copy;
-    {
-      std::lock_guard<std::mutex> guard(command_mutex_);
-      if (!command_) {
-        HoldPosition(control_input);
-        return;
-      }
-
-      if ((steady_now_us - last_command_time_) > kCommandTimeoutUs) {
-        std::cerr << "Stopping commands for " << name_ << std::endl;
-        command_.reset();
-        HoldPosition(control_input);
-        return;
-      }
-      command_copy = command_;
+    std::lock_guard<std::mutex> guard(command_mutex_);
+    if (!command_) {
+      return;
     }
 
-    const std::vector<double> filtered =
-        LowPass(command_copy->target, delta_time);
+    if ((steady_now_us - last_command_time_) > kCommandTimeoutUs) {
+      std::cerr << "Stopping commands for " << name_ << std::endl;
+      last_command_time_ = 0;
+      command_.reset();
+      for (size_t i = 0; i < dof_.size(); ++i) {
+        const int idx = dof_[i];
+        if (control_input->mode[idx] == rb::kVelocityControlMode) {
+          control_input->target[idx] = 0.0;
+        }
+      }
+      return;
+    }
+
+    const std::vector<double> filtered = LowPass(command_->target, delta_time);
 
     for (size_t i = 0; i < dof_.size(); ++i) {
       const int idx = dof_[i];
-      if (command_copy->mode[i] == Mode::kPosition) {
+      if (command_->mode[i] == Mode::kPosition) {
         control_input->mode[idx] = rb::kPositionControlMode;
       } else {
         control_input->mode[idx] = rb::kVelocityControlMode;
@@ -176,15 +175,6 @@ class Rby1Component {
   std::vector<double> CurrentPositionSnapshot() const {
     std::lock_guard<std::mutex> guard(state_mutex_);
     return position_;
-  }
-
-  void HoldPosition(rb::ControlInput<y1_instance>* control_input) {
-    const std::vector<double> snapshot = CurrentPositionSnapshot();
-    for (size_t i = 0; i < dof_.size(); ++i) {
-      const int idx = dof_[i];
-      control_input->mode[idx] = rb::kPositionControlMode;
-      control_input->target[idx] = snapshot[i];
-    }
   }
 
   std::vector<double> LowPass(const std::vector<double>& raw,
@@ -559,15 +549,43 @@ void RealtimeDriver::HandleStateUpdate(
   }
   {
     std::lock_guard<std::mutex> guard(state_->snapshot_mutex);
-    state_->snapshot.joint_position.assign(
-        state.position.data(),
-        state.position.data() + state.position.size());
+    auto& snapshot = state_->snapshot;
+    snapshot.timestamp_ns =
+        static_cast<int64_t>(state.timestamp.tv_sec) * 1000000000LL +
+        static_cast<int64_t>(state.timestamp.tv_nsec);
+
+    const int joint_count = state.position.size();
+    snapshot.joint_is_ready.resize(joint_count);
+    for (int i = 0; i < joint_count; ++i) {
+      snapshot.joint_is_ready[i] = state.is_ready[i];
+    }
+
+    snapshot.joint_position.assign(state.position.data(),
+                                   state.position.data() + joint_count);
+    snapshot.joint_velocity.assign(state.velocity.data(),
+                                   state.velocity.data() + joint_count);
+    snapshot.joint_current.assign(state.current.data(),
+                                  state.current.data() + joint_count);
+    snapshot.joint_torque.assign(state.torque.data(),
+                                 state.torque.data() + joint_count);
+    snapshot.joint_target_position.assign(
+        state.target_position.data(),
+        state.target_position.data() + joint_count);
+    snapshot.joint_target_velocity.assign(
+        state.target_velocity.data(),
+        state.target_velocity.data() + joint_count);
+    snapshot.joint_feedback_gain.assign(
+        state.target_feedback_gain.data(),
+        state.target_feedback_gain.data() + joint_count);
+    snapshot.joint_feedforward_torque.assign(
+        state.target_feedforward_torque.data(),
+        state.target_feedforward_torque.data() + joint_count);
     for (int r = 0; r < 3; ++r) {
       for (int c = 0; c < 3; ++c) {
-        state_->snapshot.odom_SE2(r, c) = state.odometry(r, c);
+        snapshot.odom_SE2(r, c) = state.odometry(r, c);
       }
     }
-    state_->snapshot.is_valid = true;
+    snapshot.is_valid = true;
   }
 }
 

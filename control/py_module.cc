@@ -3,24 +3,69 @@
 #include <vector>
 
 #include <Eigen/Core>
+#include <iostream>
 #include <pybind11/eigen.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-#include <frameobject.h>
 
 #include "realtime_driver.h"
 
 namespace py = pybind11;
 using rby1::control::RealtimeDriver;
 
-PYBIND11_MODULE(rby1_controller, m) {
-  m.doc() = "Pybind11 bindings for the RBY1 realtime controller";
+namespace {
 
+void BindSnapshot(py::module_& m) {
   py::class_<RealtimeDriver::RobotSnapshot>(m, "RobotSnapshot")
+      .def_property_readonly(
+          "timestamp_ns",
+          [](const RealtimeDriver::RobotSnapshot& self) {
+            return self.timestamp_ns;
+          })
+      .def_property_readonly(
+          "joint_is_ready",
+          [](const RealtimeDriver::RobotSnapshot& self) {
+            return self.joint_is_ready;
+          })
       .def_property_readonly(
           "joint_position",
           [](const RealtimeDriver::RobotSnapshot& self) {
             return self.joint_position;
+          })
+      .def_property_readonly(
+          "joint_velocity",
+          [](const RealtimeDriver::RobotSnapshot& self) {
+            return self.joint_velocity;
+          })
+      .def_property_readonly(
+          "joint_current",
+          [](const RealtimeDriver::RobotSnapshot& self) {
+            return self.joint_current;
+          })
+      .def_property_readonly(
+          "joint_torque",
+          [](const RealtimeDriver::RobotSnapshot& self) {
+            return self.joint_torque;
+          })
+      .def_property_readonly(
+          "joint_target_position",
+          [](const RealtimeDriver::RobotSnapshot& self) {
+            return self.joint_target_position;
+          })
+      .def_property_readonly(
+          "joint_target_velocity",
+          [](const RealtimeDriver::RobotSnapshot& self) {
+            return self.joint_target_velocity;
+          })
+      .def_property_readonly(
+          "joint_feedback_gain",
+          [](const RealtimeDriver::RobotSnapshot& self) {
+            return self.joint_feedback_gain;
+          })
+      .def_property_readonly(
+          "joint_feedforward_torque",
+          [](const RealtimeDriver::RobotSnapshot& self) {
+            return self.joint_feedforward_torque;
           })
       .def_property_readonly(
           "odom_SE2",
@@ -28,7 +73,9 @@ PYBIND11_MODULE(rby1_controller, m) {
             return self.odom_SE2;
           })
       .def_readonly("is_valid", &RealtimeDriver::RobotSnapshot::is_valid);
+}
 
+void BindConfig(py::module_& m) {
   py::class_<RealtimeDriver::Config>(m, "Config")
       .def(py::init<>())
       .def_readwrite("robot_address", &RealtimeDriver::Config::robot_address)
@@ -36,26 +83,20 @@ PYBIND11_MODULE(rby1_controller, m) {
                      &RealtimeDriver::Config::low_pass_freq_hz)
       .def_readwrite("expect_wheel_velocity",
                      &RealtimeDriver::Config::expect_wheel_velocity);
+}
 
-  m.def(
-      "debug_echo",
-      [](const std::string& message) {
-        std::cout << "[pybind debug] " << message << std::endl;
-        return message;
-      },
-      py::arg("message"),
-      "Print the supplied message from within the pybind module and return it.");
-
+void BindDriver(py::module_& m) {
   py::class_<RealtimeDriver>(m, "RealtimeDriver")
       .def(py::init<RealtimeDriver::Config>(),
            py::arg("config") = RealtimeDriver::Config(),
            "Create a realtime controller with the given configuration.")
-      .def("run",
-           [](RealtimeDriver& self) {
-             py::gil_scoped_release release;
-             self.Run();
-           },
-           "Run the control loop in the current thread.")
+      .def(
+          "run",
+          [](RealtimeDriver& self) {
+            py::gil_scoped_release release;
+            self.Run();
+          },
+          "Run the control loop in the current thread.")
       .def("start",
            [](RealtimeDriver& self) {
              py::gil_scoped_release release;
@@ -71,7 +112,7 @@ PYBIND11_MODULE(rby1_controller, m) {
       .def("is_running", &RealtimeDriver::IsRunning,
            "Return true while the control loop is active.")
       .def("wait_until_ready", &RealtimeDriver::WaitUntilReady,
-           py::arg("timeout_sec"),
+           py::arg("timeout_sec"), py::call_guard<py::gil_scoped_release>(),
            "Block until all robot components report ready or timeout occurs.")
       .def("set_component_position_targets",
            &RealtimeDriver::SetComponentPositionTargets, py::arg("name"),
@@ -94,7 +135,12 @@ PYBIND11_MODULE(rby1_controller, m) {
       .def(
           "get_latest_robot_state",
           [](const RealtimeDriver& self) -> py::object {
-            const auto snapshot = self.GetLatestRobotState();
+            // Release the GIL only while invoking the C++ getter, then
+            // reacquire it before interacting with Python objects.
+            const auto snapshot = [&self]() {
+              py::gil_scoped_release release;
+              return self.GetLatestRobotState();
+            }();
             if (!snapshot.has_value()) {
               return py::none();
             }
@@ -111,4 +157,23 @@ PYBIND11_MODULE(rby1_controller, m) {
              self.Stop();
              return false;
            });
+}
+
+}  // namespace
+
+PYBIND11_MODULE(rby1_controller, m) {
+  m.doc() = "Pybind11 bindings for the RBY1 realtime controller";
+
+  BindSnapshot(m);
+  BindConfig(m);
+  BindDriver(m);
+
+  m.def(
+      "debug_echo",
+      [](const std::string& message) {
+        std::cout << "[pybind debug] " << message << std::endl;
+        return message;
+      },
+      py::arg("message"),
+      "Print the supplied message from within the pybind module and return it.");
 }
