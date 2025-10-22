@@ -207,7 +207,7 @@ class RBY1WholeBodyIK:
         right_target_quat: Optional[np.ndarray] = None,
         current_qpos: Optional[np.ndarray] = None,
         dt: float = 1e-3,
-    ) -> Tuple[np.ndarray, bool, Dict]:
+    ) -> Tuple[np.ndarray, np.ndarray, bool, Dict]:
         """Solve whole-body IK for given end-effector targets.
         
         The solver optimizes base position (X, Y, theta) along with joint positions
@@ -220,10 +220,11 @@ class RBY1WholeBodyIK:
             right_target_quat: Right end effector target orientation (quaternion wxyz)
             current_qpos: Current joint positions (if None, uses data.qpos)
             dt: Integration timestep (default 1ms)
-            
         Returns:
-            Tuple of (solution_qpos, success, info_dict)
-            Note: solution_qpos contains optimized base position and joint positions
+            solution_qpos: Optimized generalized positions (base + joints).
+            solution_qvel: Generalized velocity used for the integration step.
+            success: True if the solver found a feasible solution.
+            info_dict: Additional diagnostics.
         """
         # Use current configuration if not provided
         if current_qpos is None:
@@ -348,14 +349,22 @@ class RBY1WholeBodyIK:
         
         try:
             vel = mink.solve_ik(configuration, tasks, dt, solver, damping, limits=limits)
-            # vel = mink.solve_ik(configuration, tasks, dt, solver, damping)
+            solution_vel = vel.copy()
             configuration.integrate_inplace(vel, dt)
             # Get solution
             solution_qpos = configuration.q.copy()
             success = True
         except mink.NoSolutionFound:
             solution_qpos = current_qpos.copy()
+            solution_vel = np.zeros(self.model.nv, dtype=float)
             success = False
+        else:
+            if solution_vel.shape[0] != self.model.nv:
+                # Ensure velocity has consistent dimension (pad if necessary).
+                padded = np.zeros(self.model.nv, dtype=float)
+                count = min(solution_vel.shape[0], self.model.nv)
+                padded[:count] = solution_vel[:count]
+                solution_vel = padded
 
         # Final error check
         final_errors = {}
@@ -380,7 +389,7 @@ class RBY1WholeBodyIK:
             "stability_margin": stability_margin,
         }
         
-        return solution_qpos, success, info
+        return solution_qpos, solution_vel, success, info
     
     def _get_site_position(self, site_name: str, qpos: np.ndarray) -> np.ndarray:
         """Get site position for given joint configuration.
@@ -635,4 +644,3 @@ class RBY1WholeBodyIK:
             com_stability_task,
         ]
         
-

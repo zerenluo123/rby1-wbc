@@ -64,7 +64,7 @@ def main():
             # Run whole-body IK from current viewer state
             current_qpos = data.qpos.copy()
             time_start = time.time()
-            sol_qpos, success, _info = ik.solve(
+            sol_qpos, _sol_vel, success, _info = ik.solve(
                 left_target_pos=left_target,
                 left_target_quat=None,
                 right_target_pos=right_target,
@@ -120,5 +120,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

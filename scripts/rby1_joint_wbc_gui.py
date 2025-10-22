@@ -267,7 +267,7 @@ class SimGUI:
                 continue
 
             # incremental whole-body IK
-            sol_qpos, success, _info = self.ik.solve(
+            sol_qpos, _sol_vel, success, _info = self.ik.solve(
                 left_target_pos=left_pos,
                 left_target_quat=left_quat,
                 right_target_pos=right_pos,
