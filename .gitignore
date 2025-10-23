@@ -1,1 +1,6 @@
 */__pycache__/
+examples/
+build/
+.vscode/
+f_back
+__pycache__
