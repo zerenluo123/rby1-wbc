@@ -15,26 +15,29 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 from ik.rby1_whole_body_ik import RBY1WholeBodyIK
 import rby1_sdk
-from rby1_sdk import *
-
 import threading
 from dataclasses import dataclass
 import os
 
+# PARAMETRS
+MINIMUM_TIME = 0.1
+CONTROL_HOLD_TIME = 100 # 100s
+ROBOT_STATE_FREQUENCY= 500 # 0.002s 
+IK_FREQUENCY = 50 # 5ms
+VIEWER_FREQUENCY = 60 
+
 class RobotState:
     def __init__(self):
-        self.q = SimpleQueue()
+        self._lock = threading.Lock()
         self.latest = None
 
     def store(self, new_state):
-        self.q.put_nowait(new_state)
-        if self.q.qsize() > 1:
-            self.q.get_nowait()
+        with self._lock:
+            self.latest = new_state
 
     def load(self):
-        if not self.q.empty():
-            self.latest = self.q.get_nowait()
-        return self.latest
+        with self._lock:
+            return self.latest
 
 @dataclass
 class SimpleRobotState:
@@ -49,15 +52,13 @@ class SharedTargets:
     left_target_quat: np.ndarray | None = None  # shape (4,) (w,x,y,z)
     right_target_pos: np.ndarray | None = None  # shape (3,)
     right_target_quat: np.ndarray | None = None # shape (4,)
-    current_qpos: np.ndarray | None = None  # shape (nq,)
 
-    def set_from_viewer(self, left_pos, left_quat, right_pos, right_quat, qpos):
+    def set_from_viewer(self, left_pos, left_quat, right_pos, right_quat):
         with self._lock:
             self.left_target_pos = np.asarray(left_pos).copy()
             self.left_target_quat = np.asarray(left_quat).copy()
             self.right_target_pos = np.asarray(right_pos).copy()
             self.right_target_quat = np.asarray(right_quat).copy()
-            self.current_qpos = np.asarray(qpos).copy()
 
     def get_for_ik(self):
         with self._lock:
@@ -65,16 +66,14 @@ class SharedTargets:
             lt_q = None if self.left_target_quat is None else self.left_target_quat.copy()
             rt_p = None if self.right_target_pos is None else self.right_target_pos.copy()
             rt_q = None if self.right_target_quat is None else self.right_target_quat.copy()
-            q  = None if self.current_qpos is None else self.current_qpos.copy()
-        return lt_p, lt_q, rt_p, rt_q, q
+        return lt_p, lt_q, rt_p, rt_q
 
 class SimGUI:
     def __init__(self, model_path: str, address: str ='localhost:50051', model_name="m"):
         # Robot Controller & State 
         self.robot_state = RobotState()
-        self.robot_state_frequency = 200 
         self.robot  = self.init_robot(address, model_name)
-        self.stream = self.robot.create_command_stream(self.robot_state_frequency)
+        self.stream = self.robot.create_command_stream()
 
         # Robot Viewer & Rate
         self.viewer = self.init_viewer(model_path)
@@ -98,7 +97,7 @@ class SimGUI:
         print("Successfully connected to the robot")
 
         print("Starting state update...")
-        robot.start_state_update(self.robot_state_callback, self.robot_state_frequency)
+        robot.start_state_update(self.robot_state_callback, ROBOT_STATE_FREQUENCY)
 
         # robot.factory_reset_all_parameters()
         # robot.set_parameter("default.acceleration_limit_scaling", "1.0")
@@ -195,23 +194,7 @@ class SimGUI:
         if rs is None:
             print("[init_viewer] No robot state found")
             exit(1)
-        # Apply base odom and joint mapping once
-        T = rs.odom_T
-        x = float(T[0, 2])
-        y = float(T[1, 2])
-        yaw = math.atan2(T[1, 0], T[0, 0])
-        # position
-        self.data.qpos[self._base_free_adr + 0] = self._base_origin_pos[0] + x
-        self.data.qpos[self._base_free_adr + 1] = self._base_origin_pos[1] + y
-        self.data.qpos[self._base_free_adr + 2] = self._base_origin_pos[2]
-        # orientation (yaw)
-        self.data.qpos[self._base_free_adr + 3 : self._base_free_adr + 7] = self._quat_from_yaw(yaw)
-
-        if rs.position.shape[0] == len(self._sdk_joint_names):
-            for sdk_idx, adr in enumerate(self._sdk_to_mj_qadr):
-                if adr is not None:
-                    self.data.qpos[adr] = rs.position[sdk_idx]
-
+        self.data.qpos[:] = self._get_current_qpos() 
         mujoco.mj_forward(self.model, self.data)
 
         # Initialize mocap pos/quats to current EE poses
@@ -246,27 +229,22 @@ class SimGUI:
             odom = np.eye(3, dtype=float)
         self.robot_state.store(SimpleRobotState(position=pos, odom_T=odom))
 
-    # Helper: FK using viewer model
-    def site_pos(self, site_name: str, qpos: np.ndarray) -> np.ndarray:
-        self.data.qpos[:] = qpos
-        mujoco.mj_forward(self.model, self.data)
-        sid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, site_name)
-        return self.data.site_xpos[sid].copy()
-
     def controller_loop(self):
         """200 Hz: read shared targets + qpos snapshot, run IK, send command."""
         model_m = rby1_sdk.Model_M()
         body_idx = list(model_m.body_idx)
         while not self._stop.is_set():
             # get the latest targets (from viewer) and qpos snapshot
-            left_pos, left_quat, right_pos, right_quat, qpos_for_ik = self.shared.get_for_ik()
+            left_pos, left_quat, right_pos, right_quat = self.shared.get_for_ik()
+            qpos_for_ik = self._get_current_qpos() 
 
             if qpos_for_ik is None or left_pos is None or right_pos is None:
                 # wait until viewer publishes first samples
                 self.ik_rate.sleep()
                 continue
 
-            # incremental whole-body IK
+            # incremental whole-body IK 
+            # Returns 33D: [x, y, yaw_quat, 26D]
             sol_qpos, _sol_vel, success, _info = self.ik.solve(
                 left_target_pos=left_pos,
                 left_target_quat=left_quat,
@@ -289,12 +267,10 @@ class SimGUI:
                 cy, sy = math.cos(yaw_prev), math.sin(yaw_prev)
                 x_err_b =  cy * x_err_w + sy * y_err_w
                 y_err_b = -sy * x_err_w + cy * y_err_w
-                x_err_b = x_err_w
-                y_err_b = y_err_w
 
-                vx_body = x_err_b / self.ik_rate.dt
-                vy_body = y_err_b / self.ik_rate.dt
-                wz = yaw_err / self.ik_rate.dt
+                vx_body = x_err_b / self.ik_rate.dt # m/s
+                vy_body = y_err_b / self.ik_rate.dt # m/s
+                wz = yaw_err / self.ik_rate.dt # rad/s
 
                 vx_body *= 0.1
                 vy_body *= 0.1
@@ -317,7 +293,7 @@ class SimGUI:
                 body_targets = positions_sdk[body_idx]
 
                 # 3) Construct builders
-                header = rby1_sdk.CommandHeaderBuilder().set_control_hold_time(1e6)
+                header = rby1_sdk.CommandHeaderBuilder().set_control_hold_time(CONTROL_HOLD_TIME)
 
                 jp = (
                     rby1_sdk.JointPositionCommandBuilder()
@@ -329,7 +305,7 @@ class SimGUI:
                 se2 = (
                     rby1_sdk.SE2VelocityCommandBuilder()
                     .set_command_header(header)
-                    .set_minimum_time(max(3.0 * self.ik_rate.dt, 0.03))
+                    .set_minimum_time(MINIMUM_TIME)
                     .set_velocity(np.array([vx_body, vy_body], dtype=float), float(wz))
                     # .set_acceleration_limit(np.array([0.5, 0.5], dtype=float), 1.0)
                 )
@@ -352,39 +328,9 @@ class SimGUI:
 
     def visualize_loop(self):
         """~60 Hz: pull latest robot state, update MuJoCo, publish mocap targets for controller, render."""
-        rs = self.robot_state.load()
-        if rs is not None and isinstance(rs, SimpleRobotState):
-            # Apply odometry to free joint pose (x,y,yaw) while keeping base height constant
-            try:
-                T = rs.odom_T
-                x = float(T[0, 2])
-                y = float(T[1, 2])
-                yaw = math.atan2(T[1, 0], T[0, 0])
-                # position
-                self.data.qpos[self._base_free_adr + 0] = self._base_origin_pos[0] + x
-                self.data.qpos[self._base_free_adr + 1] = self._base_origin_pos[1] + y
-                self.data.qpos[self._base_free_adr + 2] = self._base_origin_pos[2]
-                # orientation (yaw about world Z)
-                qw, qx, qy, qz = self._quat_from_yaw(yaw)
-                self.data.qpos[self._base_free_adr + 3 : self._base_free_adr + 7] = [qw, qx, qy, qz]
-            except Exception as e:
-                print(f"[visualize] odometry apply error: {e}")
-
-            # Map 26-DOF joint positions into MuJoCo qpos according to name mapping
-            try:
-                if rs.position.shape[0] == len(self._sdk_joint_names):
-                    for sdk_idx, adr in enumerate(self._sdk_to_mj_qadr):
-                        if adr is not None:
-                            self.data.qpos[adr] = rs.position[sdk_idx]
-                else:
-                    print(
-                        f"[visualize] Unexpected DOF from robot ({rs.position.shape[0]}) != expected ({len(self._sdk_joint_names)})"
-                    )
-            except Exception as e:
-                print(f"[visualize] joint mapping apply error: {e}")
-
-            mujoco.mj_forward(self.model, self.data)
-            self.prev_qpos = self.data.qpos.copy()
+        self.data.qpos[:] = self._get_current_qpos() 
+        mujoco.mj_forward(self.model, self.data)
+        self.prev_qpos = self.data.qpos.copy()
 
         # read current mocap targets (safe in viewer thread)
         left_pos = self.data.mocap_pos[self.ee_l_mid].copy()
@@ -394,7 +340,7 @@ class SimGUI:
         right_quat = self.data.mocap_quat[self.ee_r_mid].copy()
 
         # publish targets + the qpos snapshot for IK
-        self.shared.set_from_viewer(left_pos, left_quat, right_pos, right_quat, self.data.qpos)
+        self.shared.set_from_viewer(left_pos, left_quat, right_pos, right_quat)
 
         # light & render
         mujoco.mj_camlight(self.model, self.data)
@@ -449,6 +395,47 @@ class SimGUI:
         """Cache initial base position (x0,y0,z0)."""
         self._base_origin_pos = self.data.qpos[self._base_free_adr : self._base_free_adr + 3].copy()
 
+    def _get_current_qpos(self):
+        """Get qpos from the latest robot state"""
+        qpos = self.data.qpos.copy()
+        rs = self.robot_state.load()
+        if rs is not None and isinstance(rs, SimpleRobotState):
+            # Apply odometry to free joint pose (x,y,yaw) while keeping base height constant
+            try:
+                T = rs.odom_T
+                x = float(T[0, 2])
+                y = float(T[1, 2])
+                yaw = math.atan2(T[1, 0], T[0, 0])
+                # position
+                qpos[self._base_free_adr + 0] = self._base_origin_pos[0] + x
+                qpos[self._base_free_adr + 1] = self._base_origin_pos[1] + y
+                qpos[self._base_free_adr + 2] = self._base_origin_pos[2]
+                # orientation (yaw about world Z)
+                qw, qx, qy, qz = self._quat_from_yaw(yaw)
+                qpos[self._base_free_adr + 3 : self._base_free_adr + 7] = [qw, qx, qy, qz]
+            except Exception as e:
+                print(f"[visualize] odometry apply error: {e}")
+
+            # Map 26-DOF joint positions into MuJoCo qpos according to name mapping
+            try:
+                if rs.position.shape[0] == len(self._sdk_joint_names):
+                    for sdk_idx, adr in enumerate(self._sdk_to_mj_qadr):
+                        if adr is not None:
+                            qpos[adr] = rs.position[sdk_idx]
+                else:
+                    print(
+                        f"[visualize] Unexpected DOF from robot ({rs.position.shape[0]}) != expected ({len(self._sdk_joint_names)})"
+                    )
+            except Exception as e:
+                print(f"[visualize] joint mapping apply error: {e}")
+        return qpos
+
+    def site_pos(self, site_name: str, qpos: np.ndarray) -> np.ndarray:
+        self.data.qpos[:] = qpos
+        mujoco.mj_forward(self.model, self.data)
+        sid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, site_name)
+        return self.data.site_xpos[sid].copy()
+
     @staticmethod
     def _quat_from_yaw(yaw):
         """Quaternion (w,x,y,z) from yaw angle about +Z."""
@@ -461,6 +448,7 @@ class SimGUI:
         w, x, y, z = float(q[0]), float(q[1]), float(q[2]), float(q[3])
         # ZYX yaw
         return math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+
     def run(self):
         """Start controller in a background thread; run the viewer loop on main thread."""
         self._controller_thread = threading.Thread(
