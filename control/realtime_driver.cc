@@ -403,11 +403,17 @@ bool RealtimeDriver::SetBaseTwistCommand(const Eigen::Vector3d& twist_body) {
 
   const Eigen::Vector4d wheel_velocity =
       state_->mecanum.CalcWheelVelocity(twist_body);
+  // `wheel_velocity` is ordered [FL, FR, RL, RR]; reorder to match kMobilityIdx
+  // which uses [FR, FL, RR, RL].
+  // TODO: Not sure if this is correct.
+  const Eigen::Vector4d mobility_ordered(
+    wheel_velocity[1], wheel_velocity[0], wheel_velocity[3], wheel_velocity[2]);
   // std::cout << "[cmd] base twist (vx, vy, wz) = " << twist_body.transpose()
-  //           << ", wheel vel = " << wheel_velocity.transpose() << std::endl;
+  //           << ", wheel vel = " << mobility_ordered.transpose()
+  //           << std::endl;
   return state_->wheel_component->SetVelocityTargets(
-      std::vector<double>(wheel_velocity.data(),
-                          wheel_velocity.data() + wheel_velocity.size()));
+      std::vector<double>(mobility_ordered.data(),
+                          mobility_ordered.data() + mobility_ordered.size()));
 }
 
 bool RealtimeDriver::SetWheelVelocityTargets(
