@@ -320,7 +320,9 @@ class PybindSimGUI:
                 continue
 
             try:
-                body_targets, twist = self._compute_commands(sol_qpos, sol_vel, body_idx)
+                body_targets, twist = self._compute_commands(
+                    sol_qpos, sol_vel, qpos_for_ik, body_idx
+                )
                 self.controller.set_body_position_targets(body_targets.tolist())
                 self.controller.set_base_twist_command(twist)
             except Exception as exc:  # pragma: no cover - defensive
@@ -332,6 +334,7 @@ class PybindSimGUI:
         self,
         sol_qpos: np.ndarray,
         sol_qvel: np.ndarray,
+        cur_qpos: np.ndarray,
         body_idx: list[int],
     ) -> Tuple[np.ndarray, np.ndarray]:
         positions_sdk = np.zeros(len(self._sdk_joint_names), dtype=float)
@@ -339,30 +342,58 @@ class PybindSimGUI:
             if adr is not None:
                 positions_sdk[i] = sol_qpos[adr]
 
-        body_targets = positions_sdk[body_idx]
-        twist = self._extract_base_twist(sol_qpos, sol_qvel)
+        # Order body joints to match driver expectation: TORSO, LEFT, RIGHT, HEAD.
+        name_to_idx = {name: i for i, name in enumerate(self._sdk_joint_names)}
+        torso_idxs = [name_to_idx[f"torso_{i}"] for i in range(6)]
+        left_idxs = [name_to_idx[f"left_arm_{i}"] for i in range(7)]
+        right_idxs = [name_to_idx[f"right_arm_{i}"] for i in range(7)]
+        head_idxs = [name_to_idx[f"head_{i}"] for i in range(2)]
+        ordered = torso_idxs + left_idxs + right_idxs + head_idxs
+        body_targets = positions_sdk[ordered]
+        twist = self._extract_base_twist_from_qvel(sol_qvel, cur_qpos)
 
-        max_lin = 1.5
-        max_ang = np.pi / 2
-        twist[0] = float(np.clip(twist[0], -max_lin, max_lin))
-        twist[1] = float(np.clip(twist[1], -max_lin, max_lin))
-        twist[2] = float(np.clip(twist[2], -max_ang, max_ang))
+        # Optional limit (leave unclipped to let controller limits apply)
+        # max_lin = 1.5
+        # max_ang = np.pi / 2
+        # twist[0] = float(np.clip(twist[0], -max_lin, max_lin))
+        # twist[1] = float(np.clip(twist[1], -max_lin, max_lin))
+        # twist[2] = float(np.clip(twist[2], -max_ang, max_ang))
         return body_targets, twist
 
-    def _extract_base_twist(
-        self, sol_qpos: np.ndarray, sol_qvel: np.ndarray
+    def _extract_base_twist_from_qvel(
+        self, sol_qvel: np.ndarray, cur_qpos: np.ndarray
     ) -> np.ndarray:
-        if sol_qvel.shape[0] < 6:
+        if sol_qvel.shape[0] < 6 or cur_qpos.shape[0] < 7:
             return np.zeros(3, dtype=float)
 
-        angular_world = sol_qvel[0:3]
-        linear_world = sol_qvel[3:6]
+        # Interpret sol_qvel as: [vx_w, vy_w, ?, ?, ?, wz]
+        vx_w = float(sol_qvel[0])
+        vy_w = float(sol_qvel[1])
+        wz = float(sol_qvel[5])
 
-        quat = sol_qpos[3:7]
-        R_world_base = self._quat_to_matrix(quat)
-        linear_body = R_world_base.T @ linear_world
+        # Rotate world linear velocity into body frame using current yaw
+        yaw_cur = self._yaw_from_quat(cur_qpos[3:7])
+        cy = math.cos(yaw_cur)
+        sy = math.sin(yaw_cur)
+        vx_b =  cy * vx_w + sy * vy_w
+        vy_b = -sy * vx_w + cy * vy_w
 
-        return np.array([linear_body[0], linear_body[1], angular_world[2]], dtype=float)
+        vx_b *= 0.1
+        vy_b *= 0.1
+        wz *= 0.1
+
+        return np.array([vx_b, vy_b, wz], dtype=float)
+
+    # def _extract_base_twist_from_qvel(
+    #     self, sol_qvel: np.ndarray, cur_qpos: np.ndarray, dt: float
+    # ) -> np.ndarray:
+    #     if sol_qvel.shape[0] < 6 or cur_qvel.shape[0] < 6 or dt <= 0:
+    #         return np.zeros(3, dtype=float)
+
+    #     vx_body = float(sol_qvel[3])
+    #     vy_body = float(sol_qvel[4])
+    #     wz_body = float(sol_qvel[2])
+    #     return np.array([vx_body, vy_body, wz_body], dtype=float)
 
     def visualize_loop(self) -> None:
         if self.viewer is None:
