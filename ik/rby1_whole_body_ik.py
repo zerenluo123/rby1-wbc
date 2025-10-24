@@ -614,7 +614,7 @@ class RBY1WholeBodyIK:
             frame_name=self.torso5_name,
             frame_type="body",
             position_cost=0.0,  # Don't constrain position
-            orientation_cost=TORSO_UPRIGHT_ORI_COST,  # STRONG constraint to maintain upright posture
+            orientation_cost=[TORSO_UPRIGHT_ORI_COST, TORSO_UPRIGHT_ORI_COST, 0],  # STRONG constraint to maintain upright posture
             lm_damping=1e-4,
         )
         # Set target to upright orientation (identity rotation)
