@@ -36,16 +36,16 @@ class MecanumWheelVelocityKinematics {
       : inv_wheel_radius_(1.0 / wheel_radius) {
     const double lx = track * 0.5;
     const double ly = wheelbase * 0.5;
-
-    vehicle_to_wheel_map_.row(0) = Eigen::Vector3d(1.0, -1.0, -(lx + ly));
-    vehicle_to_wheel_map_.row(1) = Eigen::Vector3d(1.0, 1.0, (lx + ly));
-    vehicle_to_wheel_map_.row(2) = Eigen::Vector3d(1.0, 1.0, -(lx + ly));
-    vehicle_to_wheel_map_.row(3) = Eigen::Vector3d(1.0, -1.0, (lx + ly));
+    // [FR, FL, RR, RL]
+    vehicle_to_wheel_map_.row(0) = Eigen::Vector3d(1.0, 1.0, (lx + ly));
+    vehicle_to_wheel_map_.row(1) = Eigen::Vector3d(1.0, -1.0, -(lx + ly));
+    vehicle_to_wheel_map_.row(2) = Eigen::Vector3d(1.0, -1.0, (lx + ly));
+    vehicle_to_wheel_map_.row(3) = Eigen::Vector3d(1.0, 1.0, -(lx + ly));
 
     wheel_to_vehicle_map_.row(0) = Eigen::Vector4d(1.0, 1.0, 1.0, 1.0);
-    wheel_to_vehicle_map_.row(1) = Eigen::Vector4d(-1.0, 1.0, 1.0, -1.0);
+    wheel_to_vehicle_map_.row(1) = Eigen::Vector4d(1.0, -1.0, -1.0, 1.0);
     wheel_to_vehicle_map_.row(2) = Eigen::Vector4d(
-        -1.0 / (lx + ly), 1.0 / (lx + ly), -1.0 / (lx + ly), 1.0 / (lx + ly));
+        1.0 / (lx + ly), -1.0 / (lx + ly), 1.0 / (lx + ly), -1.0 / (lx + ly));
   }
 
   Eigen::Vector4d CalcWheelVelocity(const Eigen::Vector3d& vehicle_velocity)
@@ -403,17 +403,10 @@ bool RealtimeDriver::SetBaseTwistCommand(const Eigen::Vector3d& twist_body) {
 
   const Eigen::Vector4d wheel_velocity =
       state_->mecanum.CalcWheelVelocity(twist_body);
-  // `wheel_velocity` is ordered [FL, FR, RL, RR]; reorder to match kMobilityIdx
-  // which uses [FR, FL, RR, RL].
-  // TODO: Not sure if this is correct.
-  const Eigen::Vector4d mobility_ordered(
-    wheel_velocity[1], wheel_velocity[0], wheel_velocity[3], wheel_velocity[2]);
-  // std::cout << "[cmd] base twist (vx, vy, wz) = " << twist_body.transpose()
-  //           << ", wheel vel = " << mobility_ordered.transpose()
-  //           << std::endl;
+
   return state_->wheel_component->SetVelocityTargets(
-      std::vector<double>(mobility_ordered.data(),
-                          mobility_ordered.data() + mobility_ordered.size()));
+    std::vector<double>(wheel_velocity.data(),
+                        wheel_velocity.data() + wheel_velocity.size()));
 }
 
 bool RealtimeDriver::SetWheelVelocityTargets(

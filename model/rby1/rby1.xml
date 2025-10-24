@@ -324,6 +324,8 @@
     <mesh name="PAN_TILT_3_1" file="././assets/PAN_TILT_3/PAN_TILT_3_1.obj"/>
   </asset>
   <worldbody>
+    <geom name="floor" pos="0 0 0" size="0 0 0.05" type="plane" material="plane" condim="1"
+    solimp="0.95 0.99 0.001 0.5 2" friction="0.05 0.001 0.05" />
     <light pos="0 0 5" dir="0 0 -1" directional="true" castshadow="false" diffuse="0.8 0.8 0.8" specular="0 0 0"/>
     <body name="base" gravcomp="0.9">
       <inertial pos="-0.0615794 -0.00142271 0.135139" quat="0.00383057 0.733861 -0.00742942 0.679248" mass="60.0804" diaginertia="3.77525 2.99424 1.36264"/>
@@ -666,14 +668,13 @@
     <position name="head_0_act" joint="head_0" kp="4000" kv="400" ctrlrange="-0.523 0.523"/>
     <position name="head_1_act" joint="head_1" kp="4000" kv="400" ctrlrange="-0.35 1.57"/>
   </actuator>
+</mujoco>
 
-  <worldbody>
+  <!-- <worldbody>
     <!-- <site name="target_end_effector_l", pos="0 0 0" size="0.01" rgba="0 0 1 1" type="sphere" />
     <site name="target_end_effector_r", pos="0 0 0" size="0.01" rgba="1 0 0 1" type="sphere" />
     <site name="target_head", pos="0 0 0" size="0.01" rgba="0 1 0 1" type="sphere" /> -->
     <geom name="floor" pos="0 0 0" size="0 0 0.05" type="plane" material="plane" condim="1"
     solimp="0.95 0.99 0.001 0.5 2" friction="0.05 0.001 0.05" />
     <!-- <geom name="base" pos="0 0 0.1" size="0.1 0.1 0.1" type="box" rgba="0.8 0.2 0.2 1" /> -->
-  </worldbody>
-
-</mujoco>
+  </worldbody> -->
