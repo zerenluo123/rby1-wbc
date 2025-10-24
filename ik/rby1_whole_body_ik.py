@@ -17,8 +17,29 @@ EE_ORI_COST = 10000
 # BASE_ORI_COST = [1e5, 1e5, 100.0]
 TORSO_UPRIGHT_ORI_COST = 1000
 POSTURE_COST_MAIN = 100.0
-POSTURE_COST_TORSO_BIAS = 50.0
 COM_OVER_BASE_POS_COST = 100.0
+
+NOMINAL_TORSO_RAD = np.array([0.0,
+                              0.7854,
+                              -1.5708,
+                              0.7854,
+                              0.0,
+                              0.0])
+NOMINAL_RIGHT_ARM_RAD = np.array([0.0,
+                                  -0.0873,
+                                  0.0,
+                                  -2.0944,
+                                  0.0,
+                                  0.9599,
+                                  1.5708])
+NOMINAL_LEFT_ARM_RAD = np.array([0.0,
+                                 0.0873,
+                                 0.0,
+                                 -2.0944,
+                                 0.0,
+                                 0.9599,
+                                 -1.5708])
+NOMINAL_HEAD_RAD = np.array([0.0, 0.6109])
 
 SAFETY_DISTANCE = 0.01         # m, keep at least this clearance
 INFLUENCE_DISTANCE = 0.05      # m, start repulsion here
@@ -142,6 +163,15 @@ class RBY1WholeBodyIK:
         self._cached_tasks = None
         self._build_limits_cache()
         self._build_tasks_cache()
+
+        self.nominal_torso_angles = NOMINAL_TORSO_RAD.copy()
+        self.nominal_right_arm_angles = NOMINAL_RIGHT_ARM_RAD.copy()
+        self.nominal_left_arm_angles = NOMINAL_LEFT_ARM_RAD.copy()
+        self.nominal_head_angles = NOMINAL_HEAD_RAD.copy()
+        assert len(self.torso_qpos_indices) == self.nominal_torso_angles.size
+        assert len(self.right_arm_qpos_indices) == self.nominal_right_arm_angles.size
+        assert len(self.left_arm_qpos_indices) == self.nominal_left_arm_angles.size
+        assert len(self.head_qpos_indices) == self.nominal_head_angles.size
     
     def _setup_joint_indices(self):
         """Setup joint indices for different robot parts."""
@@ -190,14 +220,37 @@ class RBY1WholeBodyIK:
             if joint_id >= 0:
                 qpos_adr = self.model.jnt_qposadr[joint_id]
                 self.right_arm_qpos_indices.append(qpos_adr)
+
+        # Head joints
+        self.head_joint_names = [f"head_{i}" for i in range(2)]
+        self.head_qpos_indices = []
+        for name in self.head_joint_names:
+            joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            if joint_id >= 0:
+                qpos_adr = self.model.jnt_qposadr[joint_id]
+                self.head_qpos_indices.append(qpos_adr)
         
         # All IK-controlled indices (including base now)
         self.ik_controlled_indices = (
             self.base_qpos_indices +  # Base X, Y, Z
             self.torso_qpos_indices + 
             self.left_arm_qpos_indices + 
-            self.right_arm_qpos_indices
+            self.right_arm_qpos_indices +
+            self.head_qpos_indices
         )
+
+    def _get_nominal_posture(self, base_qpos: np.ndarray) -> np.ndarray:
+        """Return a copy of qpos with torso and arm joints set to nominal angles."""
+        reference = base_qpos.copy()
+        for idx, angle in zip(self.torso_qpos_indices, self.nominal_torso_angles):
+            reference[idx] = angle
+        for idx, angle in zip(self.left_arm_qpos_indices, self.nominal_left_arm_angles):
+            reference[idx] = angle
+        for idx, angle in zip(self.right_arm_qpos_indices, self.nominal_right_arm_angles):
+            reference[idx] = angle
+        for idx, angle in zip(self.head_qpos_indices, self.nominal_head_angles):
+            reference[idx] = angle
+        return reference
     
     def solve(
         self,
@@ -281,8 +334,8 @@ class RBY1WholeBodyIK:
         base_ground_task = mink.FrameTask(
             frame_name=self.base_name,
             frame_type="body",
-            position_cost=[100.0, 100.0, 100000.0],  # Allow X,Y movement, strongly constrain Z
-            orientation_cost=[100000.0, 100000.0, 100.0],  # Constrain roll/pitch, allow yaw
+            position_cost=[0., 0., 100000.0],  # Allow X,Y movement, strongly constrain Z
+            orientation_cost=[100000.0, 100000.0, 0.],  # Constrain roll/pitch, allow yaw
             lm_damping=1e-6,
         )
         # Set target to current X,Y but Z=0 and upright orientation with current yaw
@@ -311,29 +364,7 @@ class RBY1WholeBodyIK:
             cost=POSTURE_COST_MAIN  
         )
         # Set reference posture
-        reference_qpos = current_qpos.copy()   # torso_5: stay near 0
-        posture_task.set_target(reference_qpos)
-        tasks.append(posture_task)
-
-        # Torso movement penalty task
-        # Define preferred ranges for torso joints (in radians)
-        # torso_1: -10° to 45° = -0.175 to 0.785 rad
-        # torso_2: -90° to 10° = -1.571 to 0.175 rad  
-        # torso_3: -10° to 45° = -0.175 to 0.785 rad
-        # torso_0, torso_4, torso_5: keep small range around 0
-
-        posture_task = mink.PostureTask(
-            model=self.model,
-            cost=POSTURE_COST_TORSO_BIAS  # Lower cost - mainly for arm redundancy resolution
-        )
-        # Set reference posture
-        reference_qpos = current_qpos.copy()
-        reference_qpos[11] = 0.0      # torso_0: stay near 0
-        reference_qpos[12] = 0.305    # torso_1: middle of [-0.175, 0.785]
-        reference_qpos[13] = -0.698   # torso_2: middle of [-1.571, 0.175]
-        reference_qpos[14] = 0.305    # torso_3: middle of [-0.175, 0.785]
-        reference_qpos[15] = 0.0      # torso_4: stay near 0
-        reference_qpos[16] = 0.0      # torso_5: stay near 0
+        reference_qpos = self._get_nominal_posture(current_qpos)
         posture_task.set_target(reference_qpos)
         tasks.append(posture_task)
 
