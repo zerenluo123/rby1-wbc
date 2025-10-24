@@ -22,6 +22,13 @@ cd ..
 ln -s build/rby1_controller*.so rby1_controller.so
 ```
 
+## Rebuilding
+If you have made the source code changes
+```bash
+cd build
+cmake --build . -j
+```
+
 If your SDK install uses non-standard paths, set `RBY1_SDK_INCLUDE_DIR` and
 `RBY1_SDK_LIBRARY` explicitly. The resulting shared object
 (`rby1_controller.*.so`) can be placed on `PYTHONPATH`, and the executable can
