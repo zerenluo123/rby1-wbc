@@ -30,6 +30,10 @@ from rby1.control import (
     RobotSnapshot,
 )
 
+# TRI's IK runs at 500 hz and ours at 100 hz, so scale the gains by 5x
+BASE_ERROR_GAIN = np.array([0.2, 0.2, 0.2], dtype=float)
+# Might need to tune this more
+BASE_VELOCITY_GAIN = np.array([0.09, 0.09, 0.5], dtype=float)
 
 class RobotStateBuffer:
     """Stores the latest robot snapshot retrieved from the controller."""
@@ -267,30 +271,45 @@ class RBY1WBC:
         head_idxs = [name_to_idx[f"head_{i}"] for i in range(2)]
         ordered = torso_idxs + left_idxs + right_idxs + head_idxs
         body_targets = positions_sdk[ordered]
-        twist = self._extract_base_twist_from_qvel(sol_qvel, cur_qpos)
+        twist = self._compute_base_twist_command(sol_qpos, sol_qvel, cur_qpos)
         return body_targets, twist
 
-    def _extract_base_twist_from_qvel(
-        self, sol_qvel: np.ndarray, cur_qpos: np.ndarray
+    def _compute_base_twist_command(
+        self, sol_qpos: np.ndarray, sol_qvel: np.ndarray, cur_qpos: np.ndarray
     ) -> np.ndarray:
-        if sol_qvel.shape[0] < 6 or cur_qpos.shape[0] < 7:
-            return np.zeros(3, dtype=float)
+        measured_x = float(cur_qpos[0])
+        measured_y = float(cur_qpos[1])
+        measured_yaw = self._yaw_from_quat(cur_qpos[3:7])
 
-        vx_w = float(sol_qvel[0])
-        vy_w = float(sol_qvel[1])
-        wz = float(sol_qvel[5])
+        desired_x = float(sol_qpos[0])
+        desired_y = float(sol_qpos[1])
+        desired_yaw = self._yaw_from_quat(sol_qpos[3:7])
 
-        yaw_cur = self._yaw_from_quat(cur_qpos[3:7])
-        cy = math.cos(yaw_cur)
-        sy = math.sin(yaw_cur)
-        vx_b = cy * vx_w + sy * vy_w
-        vy_b = -sy * vx_w + cy * vy_w
+        error = np.array(
+            [
+                desired_x - measured_x,
+                desired_y - measured_y,
+                self._angle_difference(desired_yaw, measured_yaw),
+            ],
+            dtype=float,
+        )
 
-        vx_b *= 0.1
-        vy_b *= 0.1
-        wz *= 0.1
+        feedback = BASE_ERROR_GAIN * error
 
-        return np.array([vx_b, vy_b, wz], dtype=float)
+        velocity_desired_world = np.array(
+            [float(sol_qvel[0]), float(sol_qvel[1]), float(sol_qvel[5])],
+            dtype=float,
+        )
+        velocity_command_world = feedback + BASE_VELOCITY_GAIN * velocity_desired_world
+
+        cy = math.cos(measured_yaw)
+        sy = math.sin(measured_yaw)
+        vx_world = velocity_command_world[0]
+        vy_world = velocity_command_world[1]
+        vx_body = cy * vx_world + sy * vy_world
+        vy_body = -sy * vx_world + cy * vy_world
+
+        return np.array([vx_body, vy_body, velocity_command_world[2]], dtype=float)
 
     def _snapshot_to_qpos(self, snapshot: RobotSnapshot) -> np.ndarray:
         if hasattr(self, "prev_qpos") and self.prev_qpos is not None:
@@ -391,6 +410,11 @@ class RBY1WBC:
     def _yaw_from_quat(q: np.ndarray) -> float:
         w, x, y, z = float(q[0]), float(q[1]), float(q[2]), float(q[3])
         return math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+
+    @staticmethod
+    def _angle_difference(target: float, source: float) -> float:
+        diff = float(target) - float(source)
+        return (diff + math.pi) % (2 * math.pi) - math.pi
 
 
 __all__ = ["RBY1WBC", "SharedTargets"]
