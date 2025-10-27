@@ -7,10 +7,13 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 import mujoco
 import mujoco.viewer
 import numpy as np
 import pickle
+import threading
+from scipy.spatial.transform import Rotation
 
 from loop_rate_limiters import RateLimiter
 
@@ -20,20 +23,14 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from scripts.rby1_wbc import RBY1WBC
-from demo.trajectory import Trajectory
+from scripts.rby1_traj import load_trajectory
 
 class RBY1WBCTrajectory:
-    def __init__(self, model_path: str, wbc: RBY1WBC, headless: bool = False, trajectory: Trajectory = None):
+    def __init__(self, model_path: str, wbc: RBY1WBC, headless: bool = False, trajectory_frequency_hz: float = 10.0, poses_list: list[dict] | None = None, widths_list: list[dict] | None = None) -> None:
         self.model_path = model_path
         self.wbc = wbc
         self.headless = headless
 
-        self.viewer = None if headless else self._init_viewer(model_path)
-        self.viewer_rate = RateLimiter(frequency=60.0, warn=False)
-
-        self.trajectory = trajectory
-
-    def _init_viewer(self, model_path: str):
         self.model = mujoco.MjModel.from_xml_path(model_path)
         self.data = mujoco.MjData(self.model)
         mujoco.mj_forward(self.model, self.data)
@@ -43,11 +40,19 @@ class RBY1WBCTrajectory:
             raise RuntimeError("Failed to receive initial robot state snapshot")
         self._apply_snapshot(snapshot)
 
-        viewer = mujoco.viewer.launch_passive(
-            model=self.model, data=self.data, show_left_ui=False, show_right_ui=False
-        )
-        mujoco.mjv_defaultFreeCamera(self.model, viewer.cam)
-        return viewer
+        self.viewer = None
+        self.viewer_rate = None
+        if not headless:
+            self.viewer = mujoco.viewer.launch_passive(
+                model=self.model, data=self.data, show_left_ui=False, show_right_ui=False
+            )
+            mujoco.mjv_defaultFreeCamera(self.model, self.viewer.cam)
+            self.viewer_rate = RateLimiter(frequency=60.0, warn=False)
+
+        self.poses_list = poses_list if poses_list is not None else []
+        self.widths_list = widths_list if widths_list is not None else []
+        self.trajectory_rate = RateLimiter(frequency=trajectory_frequency_hz, warn=False)
+        self.trajectory_index = 0
 
     def _wait_for_initial_snapshot(self, timeout_sec: float = 5.0):
         deadline = time.monotonic() + timeout_sec
@@ -73,6 +78,9 @@ class RBY1WBCTrajectory:
         return self.data.site_xpos[sid].copy()
 
     def visualize_loop(self) -> None:
+        if self.viewer is None or self.viewer_rate is None:
+            return
+
         snapshot = self.wbc.get_latest_robot_state()
         if snapshot is not None and snapshot.is_valid:
             try:
@@ -84,23 +92,68 @@ class RBY1WBCTrajectory:
         self.viewer.sync()
         self.viewer_rate.sleep()
 
-    def target_loop(self) -> None:
-        # TODO: update_target based upon trajectory
-        self.wbc.update_targets(left_pos, left_quat, right_pos, right_quat, self.data.qpos)
+    @staticmethod
+    def _transform_to_pose(transform) -> tuple[np.ndarray, np.ndarray]:
+        mat = transform.as_matrix() if hasattr(transform, "as_matrix") else np.asarray(transform)
+        pos = mat[:3, 3].astype(float)
+        quat_xyzw = Rotation.from_matrix(mat[:3, :3]).as_quat()
+        quat_wxyz = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]], dtype=float)
+        return pos, quat_wxyz
+
+    def trajectory_loop(self) -> None:
+        """Stream the full trajectory to the WBC at trajectory_rate until finished."""
+        num_steps = min(len(self.poses_list), len(self.widths_list))
+        while self.trajectory_index < num_steps:
+
+            # Get Gripper (and Head) Poses
+            pose_entry = self.poses_list[self.trajectory_index]
+            left_transform = pose_entry["left_arm"]
+            right_transform = pose_entry["right_arm"]
+            left_pos, left_quat = self._transform_to_pose(left_transform)
+            right_pos, right_quat = self._transform_to_pose(right_transform)
+
+            head_pos = head_quat = None
+            if "head" in pose_entry:
+                head_transform = pose_entry["head"]
+                head_pos, head_quat = self._transform_to_pose(head_transform)
+
+            # Get Gripper Widths
+            width_entry = self.widths_list[self.trajectory_index]
+            left_width = width_entry["left_width"]
+            right_width = width_entry["right_width"]
+
+            self.wbc.update_targets(
+                left_pos,
+                left_quat,
+                right_pos,
+                right_quat,
+                left_width=left_width,
+                right_width=right_width,
+                head_pos=head_pos,
+                head_quat=head_quat,
+            )
+            print(f"[trajectory] step {self.trajectory_index}/{num_steps-1}")
+            self.trajectory_index += 1 
+            self.trajectory_rate.sleep()  
+
+        print("[trajectory] streaming complete.")
+
 
     def run(self) -> None:
-        if self.headless:
-            try:
+        self._trajectory_thread = threading.Thread(
+            target=self.trajectory_loop, name="trajectory_streamer", daemon=True
+        )
+        self._trajectory_thread.start()
+
+        try:
+            if self.headless:
                 while True:
                     self.viewer_rate.sleep()
-            except KeyboardInterrupt:
-                return
-        else:
-            try:
+            else:
                 while self.viewer.is_running():
                     self.visualize_loop()
-            except KeyboardInterrupt:
-                pass
+        except KeyboardInterrupt:
+            return
 
     def close(self) -> None:
         if self.viewer is not None:
@@ -108,34 +161,6 @@ class RBY1WBCTrajectory:
                 self.viewer.close()
             except Exception:  # pragma: no cover - best effort cleanup
                 pass
-
-def load_trajectory(path: str) -> Trajectory | None:
-    # Load Trajectory
-    trajectory = None
-    try:
-        with open(path, "rb") as f:
-            trajectory_data = pickle.load(f)
-
-        num_eps = len(trajectory_data)
-        if num_eps == 0:
-            print("[Trajectory] WARNING: demo dataset is empty, proceeding with no trajectory")
-            trajectory = None
-        else:        
-            print(f"[Trajectory] Loaded {path} with {num_eps} episodes found")
-            # user_input = input(f"Enter episode index to use (0 to {num_eps - 1}, default: 0): ").strip()
-            # episode_idx = int(user_input) if user_input.isdigit() else 0
-            episode_idx = 0 # currently fixed
-            trajectory = Trajectory(trajectory_data[episode_idx])
-            print(f"[Trajectory] Loaded a trajectory for episode {trajectory.episode_name} (Length: {trajectory.length} | Frequency: {trajectory.frequency} Hz)")
-        
-    except FileNotFoundError:
-        print(f"[Trajectory] WARNING: demo file not found at {path}, proceeding without trajectory")
-        trajectory = None
-    except Exception as exc:
-        print(f"[Trajectory] WARNING: failed to load demo from {path}: {exc}")
-        trajectory = None
-
-    return trajectory
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="RBY1 whole-body IK GUI decoupled from WBC thread")
@@ -168,13 +193,10 @@ def main() -> None:
     wbc = RBY1WBC(model_path=args.model, address=args.address, ik_frequency_hz=100.0)
     wbc.start()
 
-    trajectory = load_trajectory(args.trajectory)
-    if not trajectory:
-        raise Exception("No valid trajectory loaded, cannot proceed.")
-
+    poses_list, widths_list = load_trajectory(traj_dir=args.trajectory, client=wbc, use_head=False, align_mode="relative")
     gui = None
     try:
-        gui = RBY1WBCTrajectory(model_path=args.model, wbc=wbc, headless=args.headless, trajectory=trajectory)
+        gui = RBY1WBCTrajectory(model_path=args.model, wbc=wbc, headless=args.headless, trajectory_frequency_hz=10.0, poses_list=poses_list, widths_list=widths_list)
         gui.run()
     finally:
         if gui is not None:

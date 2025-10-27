@@ -3,3 +3,5 @@ mink
 mujoco
 loop_rate_limiters
 pybind11
+pandas
+transforms3d

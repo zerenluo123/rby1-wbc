@@ -65,11 +65,16 @@ class SharedTargets:
     """Thread-safe shared targets and current qpos snapshot for IK."""
 
     lock: threading.Lock = field(default_factory=threading.Lock)
-    left_target_pos: Optional[np.ndarray] = None
-    left_target_quat: Optional[np.ndarray] = None
-    right_target_pos: Optional[np.ndarray] = None
-    right_target_quat: Optional[np.ndarray] = None
-    current_qpos: Optional[np.ndarray] = None
+    left_gripper_pos: Optional[np.ndarray] = None
+    left_gripper_quat: Optional[np.ndarray] = None
+    left_gripper_width: Optional[float] = None
+
+    right_gripper_pos: Optional[np.ndarray] = None
+    right_gripper_quat: Optional[np.ndarray] = None
+    right_gripper_width: Optional[float] = None
+    
+    head_target_pos: Optional[np.ndarray] = None
+    head_target_quat: Optional[np.ndarray] = None
 
     def set_targets(
         self,
@@ -77,14 +82,20 @@ class SharedTargets:
         left_quat: np.ndarray,
         right_pos: np.ndarray,
         right_quat: np.ndarray,
-        qpos: Optional[np.ndarray] = None,
+        left_width: Optional[float] = None,
+        right_width: Optional[float] = None,
+        head_pos: Optional[np.ndarray] = None,
+        head_quat: Optional[np.ndarray] = None,
     ) -> None:
         with self.lock:
-            self.left_target_pos = left_pos.copy()
-            self.left_target_quat = left_quat.copy()
-            self.right_target_pos = right_pos.copy()
-            self.right_target_quat = right_quat.copy()
-            self.current_qpos = None if qpos is None else qpos.copy()
+            self.left_gripper_pos = left_pos.copy()
+            self.left_gripper_quat = left_quat.copy()
+            self.right_gripper_pos = right_pos.copy()
+            self.right_gripper_quat = right_quat.copy()
+            self.left_gripper_width = None if left_width is None else float(left_width)
+            self.right_gripper_width = None if right_width is None else float(right_width)
+            self.head_target_pos = None if head_pos is None else head_pos.copy()
+            self.head_target_quat = None if head_quat is None else head_quat.copy()
 
     def get_for_ik(
         self,
@@ -94,14 +105,23 @@ class SharedTargets:
         Optional[np.ndarray],
         Optional[np.ndarray],
         Optional[np.ndarray],
+        Optional[float],
+        Optional[float],
+        Optional[np.ndarray],
+        Optional[np.ndarray],
     ]:
         with self.lock:
-            lt_p = None if self.left_target_pos is None else self.left_target_pos.copy()
-            lt_q = None if self.left_target_quat is None else self.left_target_quat.copy()
-            rt_p = None if self.right_target_pos is None else self.right_target_pos.copy()
-            rt_q = None if self.right_target_quat is None else self.right_target_quat.copy()
-            q = None if self.current_qpos is None else self.current_qpos.copy()
-        return lt_p, lt_q, rt_p, rt_q, q
+            lt_p = None if self.left_gripper_pos is None else self.left_gripper_pos.copy()
+            lt_q = None if self.left_gripper_quat is None else self.left_gripper_quat.copy()
+            lw = self.left_gripper_width
+
+            rt_p = None if self.right_gripper_pos is None else self.right_gripper_pos.copy()
+            rt_q = None if self.right_gripper_quat is None else self.right_gripper_quat.copy()
+            rw = self.right_gripper_width
+
+            hp = None if self.head_target_pos is None else self.head_target_pos.copy()
+            hq = None if self.head_target_quat is None else self.head_target_quat.copy()
+        return lt_p, lt_q, lw, rt_p, rt_q, rw, hp, hq
 
 
 class RBY1WBC:
@@ -171,9 +191,21 @@ class RBY1WBC:
         left_quat: np.ndarray,
         right_pos: np.ndarray,
         right_quat: np.ndarray,
-        qpos: Optional[np.ndarray] = None,
+        left_width: Optional[float] = None,
+        right_width: Optional[float] = None,
+        head_pos: Optional[np.ndarray] = None,
+        head_quat: Optional[np.ndarray] = None,
     ) -> None:
-        self.shared_targets.set_targets(left_pos, left_quat, right_pos, right_quat, qpos)
+        self.shared_targets.set_targets(
+            left_pos,
+            left_quat,
+            right_pos,
+            right_quat,
+            left_width=left_width,
+            right_width=right_width,
+            head_pos=head_pos,
+            head_quat=head_quat,
+        )
 
     def get_latest_robot_state(self) -> Optional[RobotSnapshot]:
         return self.robot_state.load()
@@ -255,46 +287,29 @@ class RBY1WBC:
     def _ik_loop(self) -> None:
         while not self._stop.is_set():
             snapshot = self.robot_state.load()
-            qpos_from_snapshot: Optional[np.ndarray] = None
-            if snapshot is not None and snapshot.is_valid:
-                try:
-                    with self._model_lock:
-                        qpos_from_snapshot = self._snapshot_to_qpos(snapshot)
-                except Exception as exc:  # pragma: no cover - defensive
-                    print(f"[wbc] snapshot conversion error: {exc}")
+            current_qpos: Optional[np.ndarray] = self.snapshot_to_qpos(snapshot)
+            left_pos, left_quat, left_width, right_pos, right_quat, right_width, head_pos, head_quat = self.shared_targets.get_for_ik()
 
-            left_pos, left_quat, right_pos, right_quat, qpos_viewer = self.shared_targets.get_for_ik()
-            qpos_for_ik = qpos_from_snapshot if qpos_from_snapshot is not None else qpos_viewer
-
-            if isinstance(qpos_for_ik, RobotSnapshot):
-                try:
-                    with self._model_lock:
-                        qpos_for_ik = self._snapshot_to_qpos(qpos_for_ik)
-                except Exception as exc:  # pragma: no cover - defensive
-                    print(f"[wbc] snapshot-to-qpos fallback error: {exc}")
-                    qpos_for_ik = None
-
-            if qpos_for_ik is not None and not isinstance(qpos_for_ik, np.ndarray):
-                qpos_for_ik = np.asarray(qpos_for_ik, dtype=float)
-
-            if qpos_for_ik is None or left_pos is None or right_pos is None:
+            if current_qpos is None or left_pos is None or right_pos is None:
                 self.ik_rate.sleep()
                 continue
 
+            # TODO: Include head target in IK
             sol_qpos, sol_vel, success, _info = self.ik_solver.solve(
                 left_target_pos=left_pos,
                 left_target_quat=left_quat,
                 right_target_pos=right_pos,
                 right_target_quat=right_quat,
-                current_qpos=qpos_for_ik,
+                current_qpos=current_qpos,
                 dt=self.ik_rate.dt,
             )
             if not success:
                 print(f"[wbc] IK failed: {_info}")
 
             try:
+                # TODO: Add gripper commands
                 body_targets = self._compute_body_commands(sol_qpos)
-                twist = self._compute_base_twist_command(sol_qpos, sol_vel, qpos_for_ik)
+                twist = self._compute_base_twist_command(sol_qpos, sol_vel, current_qpos)
                 self.controller.set_body_position_targets(body_targets.tolist())
                 self.controller.set_base_twist_command(twist)
             except Exception as exc:  # pragma: no cover - defensive

@@ -94,7 +94,7 @@ class RBY1WBCGui:
         left_quat = self.data.mocap_quat[self.ee_l_mid].copy()
         right_quat = self.data.mocap_quat[self.ee_r_mid].copy()
 
-        self.wbc.update_targets(left_pos, left_quat, right_pos, right_quat, self.data.qpos)
+        self.wbc.update_targets(left_pos, left_quat, right_pos, right_quat)
 
         mujoco.mj_camlight(self.model, self.data)
         self.viewer.sync()
