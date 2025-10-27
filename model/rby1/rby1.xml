@@ -321,7 +321,7 @@
     <mesh name="PAN_TILT_3_0" file="././assets/PAN_TILT_3/PAN_TILT_3_0.obj"/>
     <mesh name="PAN_TILT_3_1" file="././assets/PAN_TILT_3/PAN_TILT_3_1.obj"/>
 
-    <include file="./assets/EE_FINGER/assets.xml" />
+    <include file="./assets/FINRAY_FINGER/assets.xml" />
   </asset>
   <worldbody>
     <geom name="floor" pos="0 0 0" size="0 0 0.05" type="plane" material="plane" condim="1"
@@ -513,50 +513,14 @@
                                 <body name="ee_finger_r1" pos="0.003 0 -0.2278">
                                   <inertial pos="0.00278346 -3.29e-06 -0.0257011" quat="0.999784 0 0.0208044 0" mass="0.03327" diaginertia="1.23275e-05 1.066e-05 2.22251e-06"/>
                                   <!-- <joint name="gripper_finger_r1" pos="0 0 0" axis="-1 0 0" type="slide" limited="true" range="-0.05 0" /> -->
-                                  <geom class="visual" material="191,191,191" mesh="EE_FINGER_0"/>
-                                  <geom class="visual" material="70,70,70_FINGER" mesh="EE_FINGER_1"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.01 -0.005"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.005"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.01 -0.005"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.01 -0.015"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.015"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.01 -0.015"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.0085 -0.025"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.025"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.0085 -0.025"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.0075 -0.035"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.035"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.0075 -0.035"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.0065 -0.045"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.045"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.0065 -0.045"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.0055 -0.055"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.055"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.0055 -0.055"/>
+                                  <geom class="visual" material="finray_finger_material" mesh="finray_finger_visual"/>
+                                  <geom class="collision" type="mesh" mesh="finray_finger_collider"/>
                                 </body>
                                 <body name="ee_finger_r2" pos="-0.003 0 -0.2278" quat="4.48966e-11 0 0 1">
                                   <inertial pos="0.00278346 -3.29e-06 -0.0257011" quat="0.999784 0 0.0208044 0" mass="0.03327" diaginertia="1.23275e-05 1.066e-05 2.22251e-06"/>
                                   <!-- <joint name="gripper_finger_r2" pos="0 0 0" axis="1 0 0" type="slide" limited="true" range="0 0.05" /> -->
-                                  <geom class="visual" material="191,191,191" mesh="EE_FINGER_0"/>
-                                  <geom class="visual" material="70,70,70_FINGER" mesh="EE_FINGER_1"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.01 -0.005"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.005"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.01 -0.005"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.01 -0.015"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.015"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.01 -0.015"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.0085 -0.025"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.025"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.0085 -0.025"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.0075 -0.035"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.035"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.0075 -0.035"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.0065 -0.045"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.045"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.0065 -0.045"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.0055 -0.055"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.055"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.0055 -0.055"/>
+                                  <geom class="visual" material="finray_finger_material" mesh="finray_finger_visual"/>
+                                  <geom class="collision" type="mesh" mesh="finray_finger_collider"/>
                                 </body>
                               </body>
                             </body>
@@ -649,50 +613,14 @@
                                 <body name="ee_finger_l1" pos="-0.003 0 -0.2278" quat="4.48966e-11 0 0 1">
                                   <inertial pos="0.00278346 -3.29e-06 -0.0257011" quat="0.999784 0 0.0208044 0" mass="0.03327" diaginertia="1.23275e-05 1.066e-05 2.22251e-06"/>
                                   <!-- <joint name="gripper_finger_l1" pos="0 0 0" axis="-1 0 0" type="slide" limited="true" range="-0.05 0" /> -->
-                                  <geom class="visual" material="191,191,191" mesh="EE_FINGER_0"/>
-                                  <geom class="visual" material="70,70,70_FINGER" mesh="EE_FINGER_1"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.01 -0.005"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.005"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.01 -0.005"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.01 -0.015"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.015"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.01 -0.015"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.0085 -0.025"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.025"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.0085 -0.025"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.0075 -0.035"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.035"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.0075 -0.035"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.0065 -0.045"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.045"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.0065 -0.045"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.0055 -0.055"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.055"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.0055 -0.055"/>
+                                  <geom class="visual" material="finray_finger_material" mesh="finray_finger_visual"/>
+                                  <geom class="collision" type="mesh" mesh="finray_finger_collider"/>
                                 </body>
                                 <body name="ee_finger_l2" pos="0.003 0 -0.2278" quat="-1 0 0 8.97932e-11">
                                   <inertial pos="0.00278346 -3.29e-06 -0.0257011" quat="0.999784 0 0.0208044 0" mass="0.03327" diaginertia="1.23275e-05 1.066e-05 2.22251e-06"/>
                                   <!-- <joint name="gripper_finger_l2" pos="0 0 0" axis="1 0 0" type="slide" limited="true" range="0 0.05" /> -->
-                                  <geom class="visual" material="191,191,191" mesh="EE_FINGER_0"/>
-                                  <geom class="visual" material="70,70,70_FINGER" mesh="EE_FINGER_1"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.01 -0.005"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.005"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.01 -0.005"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.01 -0.015"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.015"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.01 -0.015"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.0085 -0.025"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.025"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.0085 -0.025"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.0075 -0.035"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.035"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.0075 -0.035"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.0065 -0.045"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.045"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.0065 -0.045"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0.0055 -0.055"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 0 -0.055"/>
-                                  <geom class="collision" size="0.005" type="sphere" pos="0.0015 -0.0055 -0.055"/>
+                                  <geom class="visual" material="finray_finger_material" mesh="finray_finger_visual"/>
+                                  <geom class="collision" type="mesh" mesh="finray_finger_collider"/>
                                 </body>
                               </body>
                             </body>
