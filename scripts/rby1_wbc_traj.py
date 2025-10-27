@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 import time
@@ -24,6 +25,21 @@ if PROJECT_ROOT not in sys.path:
 
 from scripts.rby1_wbc import RBY1WBC
 from scripts.rby1_traj import load_trajectory
+
+
+def _quat_angle_error(target_quat: np.ndarray, actual_quat: np.ndarray) -> float:
+    target = np.asarray(target_quat, dtype=np.float64)
+    actual = np.asarray(actual_quat, dtype=np.float64)
+    target_norm = np.linalg.norm(target)
+    actual_norm = np.linalg.norm(actual)
+    if target_norm < 1e-9 or actual_norm < 1e-9:
+        return float("nan")
+    target /= target_norm
+    actual /= actual_norm
+    dot = float(np.dot(target, actual))
+    dot = max(-1.0, min(1.0, abs(dot)))
+    return 2.0 * math.acos(dot)
+
 
 class RBY1WBCTrajectory:
     def __init__(self, model_path: str, wbc: RBY1WBC, headless: bool = False, trajectory_frequency_hz: float = 10.0, poses_list: list[dict] | None = None, widths_list: list[dict] | None = None) -> None:
@@ -107,6 +123,9 @@ class RBY1WBCTrajectory:
             actual_right_pos,
             actual_right_quat,
         )
+        left_err = self._format_ee_error("L", policy_left_pos, policy_left_quat, actual_left_pos, actual_left_quat)
+        right_err = self._format_ee_error("R", policy_right_pos, policy_right_quat, actual_right_pos, actual_right_quat)
+        print(f"[EE error] {left_err} | {right_err}", end="\r", flush=True)
 
         mujoco.mj_camlight(self.model, self.data)
         self.viewer.sync()
@@ -193,6 +212,21 @@ class RBY1WBCTrajectory:
         pos = self.data.xpos[body_id].copy()
         quat = self.data.xquat[body_id].copy()
         return pos, quat
+
+    def _format_ee_error(
+        self,
+        label: str,
+        target_pos: Optional[np.ndarray],
+        target_quat: Optional[np.ndarray],
+        actual_pos: np.ndarray,
+        actual_quat: np.ndarray,
+    ) -> str:
+        if target_pos is None or target_quat is None:
+            return f"{label}: no target"
+        pos_err = np.asarray(target_pos, dtype=np.float64) - np.asarray(actual_pos, dtype=np.float64)
+        pos_err_norm = float(np.linalg.norm(pos_err))
+        quat_err = _quat_angle_error(target_quat, actual_quat)
+        return f"{label} dpos={pos_err_norm:.4f} dq={quat_err:.4f}"
 
     @staticmethod
     def _transform_to_pose(transform) -> tuple[np.ndarray, np.ndarray]:
