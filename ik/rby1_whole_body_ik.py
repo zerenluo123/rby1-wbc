@@ -13,6 +13,8 @@ from mink import Limit, Constraint
 
 EE_POS_COST = 10000
 EE_ORI_COST = 10000
+HEAD_POS_COST = 0
+HEAD_ORI_COST = [0, 10000, 10000]
 # BASE_POS_COST = [100.0, 100.0, 1e5]
 # BASE_ORI_COST = [1e5, 1e5, 100.0]
 TORSO_UPRIGHT_ORI_COST = 1000
@@ -150,6 +152,10 @@ class RBY1WholeBodyIK:
         self.torso5_name = "link_torso_5"
         self.left_ee_name = "end_effector_l"
         self.right_ee_name = "end_effector_r"
+        self.head_name = "head"
+        self.head_site_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_SITE, self.head_name
+        )
         # Wheel link names for stability check
         self.wheel_names = [
             "link_wheel_fr",
@@ -259,6 +265,8 @@ class RBY1WholeBodyIK:
         left_target_quat: Optional[np.ndarray] = None,
         right_target_pos: Optional[np.ndarray] = None,
         right_target_quat: Optional[np.ndarray] = None,
+        head_target_pos: Optional[np.ndarray] = None,
+        head_target_quat: Optional[np.ndarray] = None,
         current_qpos: Optional[np.ndarray] = None,
         dt: float = 1e-3,
     ) -> Tuple[np.ndarray, np.ndarray, bool, Dict]:
@@ -272,6 +280,8 @@ class RBY1WholeBodyIK:
             left_target_quat: Left end effector target orientation (quaternion wxyz)
             right_target_pos: Right end effector target position (3D)
             right_target_quat: Right end effector target orientation (quaternion wxyz)
+            head_target_pos: Head target position (3D)
+            head_target_quat: Head target orientation (quaternion wxyz)
             current_qpos: Current joint positions (if None, uses data.qpos)
             dt: Integration timestep (default 1ms)
         Returns:
@@ -329,6 +339,31 @@ class RBY1WholeBodyIK:
             
             right_ee_task.set_target(mink.SE3.from_matrix(target_matrix))
             tasks.append(right_ee_task)
+
+        head_pos_specified = head_target_pos is not None
+        head_quat_specified = head_target_quat is not None
+        head_target_pos_used = None
+        head_target_quat_used = None
+
+        if head_pos_specified or head_quat_specified:
+            head_task = mink.FrameTask(
+                frame_name=self.head_name,
+                frame_type="site",
+                position_cost=HEAD_POS_COST if head_pos_specified else 0.0,
+                orientation_cost=HEAD_ORI_COST if head_quat_specified else 0.0,
+                lm_damping=1e-5,
+            )
+            current_head_pos = self.data.site_xpos[self.head_site_id].copy()
+            current_head_quat = np.zeros(4)
+            mujoco.mju_mat2Quat(current_head_quat, self.data.site_xmat[self.head_site_id])
+
+            head_target_pos_used = head_target_pos if head_pos_specified else current_head_pos
+            head_target_quat_used = head_target_quat if head_quat_specified else current_head_quat
+
+            target_matrix = self._pose_to_matrix(head_target_pos_used, head_target_quat_used)
+            
+            head_task.set_target(mink.SE3.from_matrix(target_matrix))
+            tasks.append(head_task)
         
         # Base ground constraint (very high priority - base must stay on ground)
         # Constrain base Z position to 0 and only allow yaw rotation
@@ -406,6 +441,16 @@ class RBY1WholeBodyIK:
         if right_target_pos is not None:
             current_right_pos = self._get_site_position(self.right_ee_name, solution_qpos)
             final_errors["right_position_error"] = np.linalg.norm(current_right_pos - right_target_pos)
+        if head_pos_specified and head_target_pos_used is not None:
+            current_head_pos = self._get_site_position(self.head_name, solution_qpos)
+            final_errors["head_position_error"] = np.linalg.norm(
+                current_head_pos - head_target_pos_used
+            )
+        if head_quat_specified and head_target_quat_used is not None:
+            _, current_head_quat = self._get_site_pose(self.head_name, solution_qpos)
+            final_errors["head_orientation_error"] = self._quat_distance(
+                current_head_quat, head_target_quat_used
+            )
         
         # Check stability (COM within support polygon)
         torso5_pos = self._get_body_position(self.torso5_name, solution_qpos)
@@ -424,28 +469,41 @@ class RBY1WholeBodyIK:
         return solution_qpos, solution_vel, success, info
     
     def _get_site_position(self, site_name: str, qpos: np.ndarray) -> np.ndarray:
-        """Get site position for given joint configuration.
-        
-        Args:
-            site_name: Name of the site
-            qpos: Joint positions
-            
+        """Get site position for given joint configuration."""
+        pos, _ = self._get_site_pose(site_name, qpos)
+        return pos
+
+    def _get_site_pose(
+        self, site_name: str, qpos: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Get site position and orientation for given joint configuration.
+
         Returns:
-            3D position of the site
+            Position (3,) and quaternion (4,) in world frame.
         """
-        # Temporarily set qpos and compute forward kinematics
         old_qpos = self.data.qpos.copy()
         self.data.qpos[:] = qpos
         mujoco.mj_forward(self.model, self.data)
         
         site_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, site_name)
         pos = self.data.site_xpos[site_id].copy()
+        quat = np.zeros(4)
+        mujoco.mju_mat2Quat(quat, self.data.site_xmat[site_id])
         
         # Restore original qpos
         self.data.qpos[:] = old_qpos
         mujoco.mj_forward(self.model, self.data)
         
-        return pos
+        return pos, quat
+
+    def _quat_distance(self, q1: np.ndarray, q2: np.ndarray) -> float:
+        """Compute the angular distance between two quaternions."""
+        q1 = np.array(q1, dtype=float)
+        q2 = np.array(q2, dtype=float)
+        q1 /= np.linalg.norm(q1)
+        q2 /= np.linalg.norm(q2)
+        dot = np.clip(np.abs(np.dot(q1, q2)), 0.0, 1.0)
+        return float(2.0 * np.arccos(dot))
     
     def _get_body_position(self, body_name: str, qpos: np.ndarray) -> np.ndarray:
         """Get body position for given joint configuration.

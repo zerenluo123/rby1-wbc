@@ -8,7 +8,9 @@
     <body name="ee_r_target" mocap="true" pos="0.45 -0.30 0.90">
     <geom type="sphere" size="0.05" material="red"/>
     </body>
+    <body name="head_target" mocap="true" pos="0.30 0.00 1.50">
+    <geom type="sphere" size="0.05" rgba="0 0.3 0.9 0.6"/>
+    </body>
   </worldbody>
 </mujoco>
-
 
