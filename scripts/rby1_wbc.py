@@ -436,6 +436,8 @@ class RBY1WBC:
                 left_target_quat=left_quat,
                 right_target_pos=right_pos,
                 right_target_quat=right_quat,
+                head_target_pos=head_pos,
+                head_target_quat=head_quat,
                 current_qpos=current_qpos,
                 dt=self.ik_rate.dt,
             )
