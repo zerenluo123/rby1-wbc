@@ -35,22 +35,29 @@ BASE_ERROR_GAIN = np.array([0.2, 0.2, 0.2], dtype=float)
 # Might need to tune this more
 BASE_VELOCITY_GAIN = np.array([0.09, 0.09, 0.5], dtype=float)
 
+# Init Position
+INIT_POSITION={ 
+    "torso": np.array([0.0, 0.7854, -1.5708, 0.7854, 0.0, 0.0]), 
+    "left_arm": np.array([0.0, 0.0873, 0.0, -2.0944, 0.0, 0.9599, -1.5708]),
+    "right_arm": np.array([0.0, -0.0873, 0.0, -2.0944, 0.0, 0.9599, 1.5708]),
+    "head": np.array([0.0, 0.6109]), 
+    "grippers": np.array([0.1, 0.1])
+}
+
+
 class RobotStateBuffer:
     """Stores the latest robot snapshot retrieved from the controller."""
-
     def __init__(self):
-        self._queue: SimpleQueue[RobotSnapshot] = SimpleQueue()
+        self._lock = threading.Lock()
         self.latest: Optional[RobotSnapshot] = None
 
     def store(self, snapshot: RobotSnapshot) -> None:
-        self._queue.put_nowait(snapshot)
-        if self._queue.qsize() > 1:
-            self._queue.get_nowait()
+        with self._lock:
+            self.latest = snapshot
 
     def load(self) -> Optional[RobotSnapshot]:
-        if not self._queue.empty():
-            self.latest = self._queue.get_nowait()
-        return self.latest
+        with self._lock:
+            return self.latest
 
 
 @dataclass
@@ -147,6 +154,7 @@ class RBY1WBC:
         self._state_thread.start()
         self._ik_thread.start()
         self._threads_started = True
+        self._set_init_position()
 
     def stop(self, join_timeout: float = 2.0) -> None:
         self._stop.set()
@@ -178,7 +186,7 @@ class RBY1WBC:
             if snapshot is not None and snapshot.is_valid:
                 return snapshot
             time.sleep(0.005)
-        return snapshot if snapshot is not None and snapshot.is_valid else None
+        raise Exception("Timeout waiting for first valid robot state snapshot")
 
     def snapshot_to_qpos(self, snapshot: RobotSnapshot) -> Optional[np.ndarray]:
         if snapshot is None or not snapshot.is_valid:
@@ -196,6 +204,46 @@ class RBY1WBC:
             raise RuntimeError("Controller did not report ready within 15 seconds")
         print("Realtime controller ready.")
         return controller
+
+    def _set_init_position(self) -> None:
+        print("Setting initial positions...")
+        sol_qpos = self.data.qpos.copy()
+
+        torso_indices = getattr(self.ik_solver, "torso_qpos_indices", [])
+        right_indices = getattr(self.ik_solver, "right_arm_qpos_indices", [])
+        left_indices = getattr(self.ik_solver, "left_arm_qpos_indices", [])
+        head_indices = getattr(self.ik_solver, "head_qpos_indices", [])
+
+        for idx, value in zip(torso_indices, INIT_POSITION["torso"]):
+            sol_qpos[int(idx)] = value
+        for idx, value in zip(right_indices, INIT_POSITION["right_arm"]):
+            sol_qpos[int(idx)] = value
+        for idx, value in zip(left_indices, INIT_POSITION["left_arm"]):
+            sol_qpos[int(idx)] = value
+        for idx, value in zip(head_indices, INIT_POSITION["head"]):
+            sol_qpos[int(idx)] = value
+
+        target_body = self._compute_body_commands(sol_qpos)
+        snapshot = self.wait_for_first_state()
+        with self._model_lock:
+            start_qpos = self._snapshot_to_qpos(snapshot)
+        start_body = self._compute_body_commands(start_qpos)
+
+        delta = target_body - start_body
+        max_delta = float(np.max(np.abs(delta)))
+        if max_delta < 1e-6:
+            self.controller.set_body_position_targets(target_body.tolist())
+        else:
+            steps = min(200, max(5, int(np.ceil(max_delta / 0.05))))
+            for step in range(1, steps + 1):
+                alpha = step / steps
+                cmd = start_body + alpha * delta
+                self.controller.set_body_position_targets(cmd.tolist())
+                time.sleep(0.02)
+            self.controller.set_body_position_targets(target_body.tolist())
+
+        self.prev_qpos = sol_qpos.copy()
+        print("Initial positions set.")
 
     def _state_poll_loop(self) -> None:
         while not self._stop.is_set():
@@ -245,7 +293,8 @@ class RBY1WBC:
                 print(f"[wbc] IK failed: {_info}")
 
             try:
-                body_targets, twist = self._compute_commands(sol_qpos, sol_vel, qpos_for_ik)
+                body_targets = self._compute_body_commands(sol_qpos)
+                twist = self._compute_base_twist_command(sol_qpos, sol_vel, qpos_for_ik)
                 self.controller.set_body_position_targets(body_targets.tolist())
                 self.controller.set_base_twist_command(twist)
             except Exception as exc:  # pragma: no cover - defensive
@@ -253,12 +302,7 @@ class RBY1WBC:
 
             self.ik_rate.sleep()
 
-    def _compute_commands(
-        self,
-        sol_qpos: np.ndarray,
-        sol_qvel: np.ndarray,
-        cur_qpos: np.ndarray,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    def _compute_body_commands(self, sol_qpos: np.ndarray) -> np.ndarray:
         positions_sdk = np.zeros(len(self._sdk_joint_names), dtype=float)
         for i, adr in enumerate(self._sdk_to_mj_qadr):
             if adr is not None:
@@ -271,12 +315,9 @@ class RBY1WBC:
         head_idxs = [name_to_idx[f"head_{i}"] for i in range(2)]
         ordered = torso_idxs + left_idxs + right_idxs + head_idxs
         body_targets = positions_sdk[ordered]
-        twist = self._compute_base_twist_command(sol_qpos, sol_qvel, cur_qpos)
-        return body_targets, twist
+        return body_targets
 
-    def _compute_base_twist_command(
-        self, sol_qpos: np.ndarray, sol_qvel: np.ndarray, cur_qpos: np.ndarray
-    ) -> np.ndarray:
+    def _compute_base_twist_command(self, sol_qpos: np.ndarray, sol_qvel: np.ndarray, cur_qpos: np.ndarray) -> np.ndarray:
         measured_x = float(cur_qpos[0])
         measured_y = float(cur_qpos[1])
         measured_yaw = self._yaw_from_quat(cur_qpos[3:7])
