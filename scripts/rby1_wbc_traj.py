@@ -122,6 +122,9 @@ class RBY1WBCTrajectory:
             left_width = width_entry["left_width"]
             right_width = width_entry["right_width"]
 
+            duration = 1.0 / self.trajectory_rate.dt
+            timestamp = time.monotonic()
+
             self.wbc.update_targets(
                 left_pos,
                 left_quat,
@@ -131,6 +134,8 @@ class RBY1WBCTrajectory:
                 right_width=right_width,
                 head_pos=head_pos,
                 head_quat=head_quat,
+                duration=duration,
+                timestamp=timestamp,
             )
             print(f"[trajectory] step {self.trajectory_index}/{num_steps-1}")
             self.trajectory_index += 1 
@@ -190,7 +195,7 @@ def main() -> None:
     if args.headless:
         os.environ.setdefault("MUJOCO_GL", "egl")
 
-    wbc = RBY1WBC(model_path=args.model, address=args.address, ik_frequency_hz=100.0)
+    wbc = RBY1WBC(model_path=args.model, address=args.address, ik_frequency_hz=100.0, trajectory_frequency_hz=10.0)
     wbc.start()
 
     poses_list, widths_list = load_trajectory(traj_dir=args.trajectory, client=wbc, use_head=False, align_mode="relative")
