@@ -168,6 +168,30 @@ class SharedTargets:
 
         return lt_p, lt_q, lw, rt_p, rt_q, rw, hp, hq
 
+    def get_target(self) -> Tuple[
+        Optional[np.ndarray],
+        Optional[np.ndarray],
+        Optional[float],
+        Optional[np.ndarray],
+        Optional[np.ndarray],
+        Optional[float],
+        Optional[np.ndarray],
+        Optional[np.ndarray],
+    ]:
+        with self.lock:
+            lt_p = None if self.left_gripper_pos is None else self.left_gripper_pos.copy()
+            lt_q = None if self.left_gripper_quat is None else self.left_gripper_quat.copy()
+            lw = self.left_gripper_width
+
+            rt_p = None if self.right_gripper_pos is None else self.right_gripper_pos.copy()
+            rt_q = None if self.right_gripper_quat is None else self.right_gripper_quat.copy()
+            rw = self.right_gripper_width
+
+            hp = None if self.head_target_pos is None else self.head_target_pos.copy()
+            hq = None if self.head_target_quat is None else self.head_target_quat.copy()
+
+        return lt_p, lt_q, lw, rt_p, rt_q, rw, hp, hq
+
 
 def _lerp_value(
     start: Optional[Union[np.ndarray, float]],
@@ -377,12 +401,13 @@ class RBY1WBC:
         if max_delta < 1e-6:
             self.controller.set_body_position_targets(target_body.tolist())
         else:
-            steps = min(200, max(5, int(np.ceil(max_delta / 0.05))))
+            INIT_POSITION_MAX_STEP_DELTA = 0.02
+            steps = max(10, int(np.ceil(max_delta / INIT_POSITION_MAX_STEP_DELTA)))
             for step in range(1, steps + 1):
                 alpha = step / steps
                 cmd = start_body + alpha * delta
                 self.controller.set_body_position_targets(cmd.tolist())
-                time.sleep(0.02)
+                self.ik_rate.sleep()
             self.controller.set_body_position_targets(target_body.tolist())
 
         print("Initial positions set.")

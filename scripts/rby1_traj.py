@@ -83,7 +83,11 @@ TCP_TO_MODEL_FRAME = {
 def load_pose_and_gripper(fname, idx=0):
     with open(fname, 'rb') as f:
         plan = pickle.load(f)
-    plan_episode = plan[idx]
+    
+    try:
+        plan_episode = plan[idx]
+    except Exception as e:
+        raise ValueError(f"Failed to get episode index {idx} from plan with {len(plan)} episodes: {e}")
 
     grippers_by_side = {k.split('grippers_')[1]: v for k, v in plan_episode.items() if k.startswith('grippers_')}
     poses = {}
@@ -103,7 +107,7 @@ def load_pose_and_gripper(fname, idx=0):
             widths[side] = gripper_widths
     return poses, widths
 
-def load_trajectory(traj_dir, client, use_head: bool, align_mode: str = "relative"):
+def load_trajectory(traj_dir, client, index: int = 0, use_head: bool = True, align_mode: str = "relative"):
     # Load raw pose_data
     traj_dir = Path(traj_dir)
 
@@ -111,7 +115,7 @@ def load_trajectory(traj_dir, client, use_head: bool, align_mode: str = "relativ
     if use_head:
         model_names.append("head")
 
-    poses, gripper_widths = load_pose_and_gripper(traj_dir)
+    poses, gripper_widths = load_pose_and_gripper(traj_dir, idx=index)
     if not traj_dir.exists():
         raise FileNotFoundError(f"Missing: {traj_dir}")
     # change keys to match model names

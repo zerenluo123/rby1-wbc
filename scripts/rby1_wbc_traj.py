@@ -40,6 +40,7 @@ class RBY1WBCTrajectory:
             raise RuntimeError("Failed to receive initial robot state snapshot")
         self._apply_snapshot(snapshot)
 
+        # Viewer setup
         self.viewer = None
         self.viewer_rate = None
         if not headless:
@@ -49,10 +50,14 @@ class RBY1WBCTrajectory:
             mujoco.mjv_defaultFreeCamera(self.model, self.viewer.cam)
             self.viewer_rate = RateLimiter(frequency=60.0, warn=False)
 
+        # Trajectory Streamer Setup
         self.poses_list = poses_list if poses_list is not None else []
         self.widths_list = widths_list if widths_list is not None else []
         self.trajectory_rate = RateLimiter(frequency=trajectory_frequency_hz, warn=False)
         self.trajectory_index = 0
+
+        self._left_ee_body_id = self.model.body("EE_BODY_R").id
+        self._right_ee_body_id = self.model.body("EE_BODY_L").id
 
     def _wait_for_initial_snapshot(self, timeout_sec: float = 5.0):
         deadline = time.monotonic() + timeout_sec
@@ -88,9 +93,106 @@ class RBY1WBCTrajectory:
             except Exception as exc:  # pragma: no cover - defensive
                 print(f"[visualize] snapshot apply error: {exc}")
 
+        policy_left_pos, policy_left_quat, _plw, policy_right_pos, policy_right_quat, _prw, _hpp, _hpq = self.wbc.shared_targets.get_target()
+        actual_left_pos, actual_left_quat = self._get_body_pose(self._left_ee_body_id)
+        actual_right_pos, actual_right_quat = self._get_body_pose(self._right_ee_body_id)
+
+        self._update_pose_markers(
+            policy_left_pos,
+            policy_left_quat,
+            policy_right_pos,
+            policy_right_quat,
+            actual_left_pos,
+            actual_left_quat,
+            actual_right_pos,
+            actual_right_quat,
+        )
+
         mujoco.mj_camlight(self.model, self.data)
         self.viewer.sync()
         self.viewer_rate.sleep()
+
+    def _update_pose_markers(
+        self,
+        policy_left_pos: Optional[np.ndarray],
+        policy_left_quat: Optional[np.ndarray],
+        policy_right_pos: Optional[np.ndarray],
+        policy_right_quat: Optional[np.ndarray],
+        actual_left_pos: np.ndarray,
+        actual_left_quat: np.ndarray,
+        actual_right_pos: np.ndarray,
+        actual_right_quat: np.ndarray,
+    ) -> None:
+        if self.viewer is None:
+            return
+        scene = self.viewer.user_scn
+        if scene is None:
+            return
+
+        scene.ngeom = 0
+        policy_alpha = 0.5
+        policy_width = 1.5
+        actual_alpha = 0.9
+        actual_width = 3.0
+
+        self._add_pose_marker(scene, policy_left_pos, policy_left_quat, policy_alpha, policy_width)
+        self._add_pose_marker(scene, policy_right_pos, policy_right_quat, policy_alpha, policy_width)
+        self._add_pose_marker(scene, actual_left_pos, actual_left_quat, actual_alpha, actual_width)
+        self._add_pose_marker(scene, actual_right_pos, actual_right_quat, actual_alpha, actual_width)
+
+    def _add_pose_marker(
+        self,
+        scene: mujoco.MjvScene,
+        pos: Optional[np.ndarray],
+        quat: Optional[np.ndarray],
+        alpha: float,
+        line_width: float,
+    ) -> None:
+        if pos is None or quat is None or scene.ngeom >= scene.maxgeom:
+            return
+
+        pos_arr = np.asarray(pos, dtype=np.float64)
+        quat_arr = np.asarray(quat, dtype=np.float64)
+
+        axis_length = 0.15
+        line_size = np.zeros(3, dtype=np.float64)
+        identity_mat = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float64)
+        axis_colors = (
+            np.array([1.0, 0.0, 0.0, alpha], dtype=np.float32),
+            np.array([0.0, 1.0, 0.0, alpha], dtype=np.float32),
+            np.array([0.0, 0.0, 1.0, alpha], dtype=np.float32),
+        )
+
+        frame_mat = np.zeros(9, dtype=np.float64)
+        mujoco.mju_quat2Mat(frame_mat, quat_arr)
+        rot = frame_mat.reshape(3, 3, order="F")
+
+        for axis_idx, axis_color in enumerate(axis_colors):
+            if scene.ngeom >= scene.maxgeom:
+                break
+            geom = scene.geoms[scene.ngeom]
+            mujoco.mjv_initGeom(
+                geom,
+                mujoco.mjtGeom.mjGEOM_LINE,
+                line_size,
+                pos_arr,
+                identity_mat,
+                axis_color,
+            )
+            endpoint = pos_arr + rot[:, axis_idx] * axis_length
+            mujoco.mjv_connector(
+                geom,
+                mujoco.mjtGeom.mjGEOM_LINE,
+                line_width,
+                pos_arr,
+                endpoint,
+            )
+            scene.ngeom += 1
+
+    def _get_body_pose(self, body_id: int) -> tuple[np.ndarray, np.ndarray]:
+        pos = self.data.xpos[body_id].copy()
+        quat = self.data.xquat[body_id].copy()
+        return pos, quat
 
     @staticmethod
     def _transform_to_pose(transform) -> tuple[np.ndarray, np.ndarray]:
@@ -102,6 +204,7 @@ class RBY1WBCTrajectory:
 
     def trajectory_loop(self) -> None:
         """Stream the full trajectory to the WBC at trajectory_rate until finished."""
+        input("Press Enter to start streaming the trajectory?")
         num_steps = min(len(self.poses_list), len(self.widths_list))
         while self.trajectory_index < num_steps:
 
@@ -122,7 +225,7 @@ class RBY1WBCTrajectory:
             left_width = width_entry["left_width"]
             right_width = width_entry["right_width"]
 
-            duration = 1.0 / self.trajectory_rate.dt
+            duration = self.trajectory_rate.dt
             timestamp = time.monotonic()
 
             self.wbc.update_targets(
@@ -137,7 +240,6 @@ class RBY1WBCTrajectory:
                 duration=duration,
                 timestamp=timestamp,
             )
-            print(f"[trajectory] step {self.trajectory_index}/{num_steps-1}")
             self.trajectory_index += 1 
             self.trajectory_rate.sleep()  
 
@@ -185,6 +287,12 @@ def main() -> None:
         help="Path to a pickle file containing trajectory episodes",
     )
     parser.add_argument(
+        "--index",
+        default=0,
+        type=int,
+        help="Index of the trajectory episode to use",
+    )
+    parser.add_argument(
         "--headless",
         action="store_true",
         help="Skip launching the MuJoCo viewer (useful for debugging controller only).",
@@ -198,7 +306,7 @@ def main() -> None:
     wbc = RBY1WBC(model_path=args.model, address=args.address, ik_frequency_hz=100.0, trajectory_frequency_hz=10.0)
     wbc.start()
 
-    poses_list, widths_list = load_trajectory(traj_dir=args.trajectory, client=wbc, use_head=False, align_mode="relative")
+    poses_list, widths_list = load_trajectory(traj_dir=args.trajectory, client=wbc, index=args.index, use_head=False, align_mode="relative")
     gui = None
     try:
         gui = RBY1WBCTrajectory(model_path=args.model, wbc=wbc, headless=args.headless, trajectory_frequency_hz=10.0, poses_list=poses_list, widths_list=widths_list)
