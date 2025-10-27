@@ -69,13 +69,13 @@ MODEL_TO_FRAME = {
 }
 
 CAMERA_TO_MODEL_FRAME = {
-    "head": RigidTransform(rpy_to_matrix([-1.57079632679, 0.0, -1.57079632679]), [-0.020851, 0.0, 0.0601]).inverse(),
+    "head": RigidTransform(rpy_to_matrix([-np.pi /2, 0.0, -np.pi/2]), [-0.020851, 0.0, 0.0601]).inverse(),
     "left_arm": RigidTransform(rpy_to_matrix([np.pi, 0.0, 0.0]), [0.0, 0.055, 0.003355]).inverse(),
     "right_arm": RigidTransform(rpy_to_matrix([0.0, np.pi, 0.0]), [0.0, -0.055, 0.003355]).inverse(),
 }
 
 TCP_TO_MODEL_FRAME = {
-    "head": RigidTransform(rpy_to_matrix([-1.57079632679, 0.0, -1.57079632679]), [0.04, 0.0, 0.0601]).inverse(),
+    "head": RigidTransform(rpy_to_matrix([-np.pi / 2, 0.0, - np.pi / 2]), [0.04, 0.0, 0.0601]).inverse(),
     "left_arm": RigidTransform(rpy_to_matrix([np.pi, 0.0, 0.0]), [0.0, 0.0, -0.2]).inverse(),
     "right_arm": RigidTransform(rpy_to_matrix([0.0, np.pi, 0.0]), [0.0, 0.0, -0.2]).inverse(),
 }

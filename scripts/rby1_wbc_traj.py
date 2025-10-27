@@ -72,8 +72,8 @@ class RBY1WBCTrajectory:
         self.trajectory_rate = RateLimiter(frequency=trajectory_frequency_hz, warn=False)
         self.trajectory_index = 0
 
-        self._left_ee_body_id = self.model.body("EE_BODY_R").id
-        self._right_ee_body_id = self.model.body("EE_BODY_L").id
+        self._left_ee_site_id = self.model.site("end_effector_l").id
+        self._right_ee_site_id = self.model.site("end_effector_r").id
 
     def _wait_for_initial_snapshot(self, timeout_sec: float = 5.0):
         deadline = time.monotonic() + timeout_sec
@@ -110,8 +110,8 @@ class RBY1WBCTrajectory:
                 print(f"[visualize] snapshot apply error: {exc}")
 
         policy_left_pos, policy_left_quat, _plw, policy_right_pos, policy_right_quat, _prw, _hpp, _hpq = self.wbc.shared_targets.get_target()
-        actual_left_pos, actual_left_quat = self._get_body_pose(self._left_ee_body_id)
-        actual_right_pos, actual_right_quat = self._get_body_pose(self._right_ee_body_id)
+        actual_left_pos, actual_left_quat = self._get_site_pose(self._left_ee_site_id)
+        actual_right_pos, actual_right_quat = self._get_site_pose(self._right_ee_site_id)
 
         self._update_pose_markers(
             policy_left_pos,
@@ -125,7 +125,9 @@ class RBY1WBCTrajectory:
         )
         left_err = self._format_ee_error("L", policy_left_pos, policy_left_quat, actual_left_pos, actual_left_quat)
         right_err = self._format_ee_error("R", policy_right_pos, policy_right_quat, actual_right_pos, actual_right_quat)
-        print(f"[EE error] {left_err} | {right_err}", end="\r", flush=True)
+
+        if left_err is not None and right_err is not None:
+            print(f"[EE error] {left_err} | {right_err}", end="\r", flush=True)
 
         mujoco.mj_camlight(self.model, self.data)
         self.viewer.sync()
@@ -208,9 +210,11 @@ class RBY1WBCTrajectory:
             )
             scene.ngeom += 1
 
-    def _get_body_pose(self, body_id: int) -> tuple[np.ndarray, np.ndarray]:
-        pos = self.data.xpos[body_id].copy()
-        quat = self.data.xquat[body_id].copy()
+    def _get_site_pose(self, site_id: int) -> tuple[np.ndarray, np.ndarray]:
+        pos = self.data.site_xpos[site_id].copy()
+        mat = self.data.site_xmat[site_id].copy()
+        quat = np.zeros(4, dtype=np.float64)
+        mujoco.mju_mat2Quat(quat, mat)
         return pos, quat
 
     def _format_ee_error(
@@ -222,7 +226,7 @@ class RBY1WBCTrajectory:
         actual_quat: np.ndarray,
     ) -> str:
         if target_pos is None or target_quat is None:
-            return f"{label}: no target"
+             return None
         pos_err = np.asarray(target_pos, dtype=np.float64) - np.asarray(actual_pos, dtype=np.float64)
         pos_err_norm = float(np.linalg.norm(pos_err))
         quat_err = _quat_angle_error(target_quat, actual_quat)
