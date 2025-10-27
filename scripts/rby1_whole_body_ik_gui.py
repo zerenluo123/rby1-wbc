@@ -28,11 +28,18 @@ def main():
     ik = RBY1WholeBodyIK()
 
     # Helper: FK using viewer model
-    def site_pos(site_name: str, qpos: np.ndarray) -> np.ndarray:
+    def site_pose(site_name: str, qpos: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         data.qpos[:] = qpos
         mujoco.mj_forward(model, data)
         sid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, site_name)
-        return data.site_xpos[sid].copy()
+        pos = data.site_xpos[sid].copy()
+        quat = np.zeros(4)
+        mujoco.mju_mat2Quat(quat, data.site_xmat[sid])
+        return pos, quat
+
+    def site_pos(site_name: str, qpos: np.ndarray) -> np.ndarray:
+        pos, _ = site_pose(site_name, qpos)
+        return pos
 
     # Initialize from model default
     mujoco.mj_forward(model, data)
@@ -42,10 +49,13 @@ def main():
     # Get mocap ids for target bodies and initialize them at current EE poses
     ee_l_mid = model.body("ee_l_target").mocapid[0]
     ee_r_mid = model.body("ee_r_target").mocapid[0]
-    # left_nominal = site_pos("end_effector_l", current_qpos)
-    # right_nominal = site_pos("end_effector_r", current_qpos)
-    # data.mocap_pos[ee_l_mid] = left_nominal
-    # data.mocap_pos[ee_r_mid] = right_nominal
+    head_mid = model.body("head_target").mocapid[0]
+
+    _, head_nominal_quat = site_pose("head", current_qpos)
+    head_nominal_pos = site_pos("head", current_qpos)
+    data.mocap_pos[head_mid] = head_nominal_pos
+    data.mocap_quat[head_mid] = head_nominal_quat
+
     # Passive viewer loop
     with mujoco.viewer.launch_passive(
         model=model, data=data, show_left_ui=False, show_right_ui=False
@@ -58,6 +68,8 @@ def main():
             # Read targets from mocap spheres (drag with mouse in viewer)
             left_target = data.mocap_pos[ee_l_mid].copy()
             right_target = data.mocap_pos[ee_r_mid].copy()
+            head_target_pos = data.mocap_pos[head_mid].copy()
+            head_target_quat = data.mocap_quat[head_mid].copy()
             # left_target[2] = max(left_target[2], 0.2)
             # right_target[2] = max(right_target[2], 0.2)
 
@@ -69,6 +81,8 @@ def main():
                 left_target_quat=None,
                 right_target_pos=right_target,
                 right_target_quat=None,
+                head_target_pos=head_target_pos,
+                head_target_quat=head_target_quat,
                 current_qpos=current_qpos,
                 dt=rate.dt
             )
@@ -96,8 +110,10 @@ def main():
             # Compute IK position error (EE vs mocap targets)
             ee_l_pos = site_pos("end_effector_l", sol_qpos)
             ee_r_pos = site_pos("end_effector_r", sol_qpos)
+            head_pos = site_pos("head", sol_qpos)
             l_err = float(np.linalg.norm(ee_l_pos - left_target))
             r_err = float(np.linalg.norm(ee_r_pos - right_target))
+            h_err = float(np.linalg.norm(head_pos - head_target_pos))
 
             # Print to stdout (may not show under mjpython without flush)
             # print(
