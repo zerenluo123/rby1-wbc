@@ -19,6 +19,7 @@ HEAD_ORI_COST = [0, 10000, 10000]
 # BASE_ORI_COST = [1e5, 1e5, 100.0]
 TORSO_UPRIGHT_ORI_COST = 1000
 POSTURE_COST_MAIN = 100.0
+POSTURE_COST_HEAD = 0.0
 COM_OVER_BASE_POS_COST = 100.0
 VELOCITY_LIMIT_SCALE = 0.9
 
@@ -179,6 +180,9 @@ class RBY1WholeBodyIK:
         assert len(self.right_arm_qpos_indices) == self.nominal_right_arm_angles.size
         assert len(self.left_arm_qpos_indices) == self.nominal_left_arm_angles.size
         assert len(self.head_qpos_indices) == self.nominal_head_angles.size
+        self.posture_cost_vector = np.full(self.model.nv, POSTURE_COST_MAIN, dtype=float)
+        for dof_idx in self.head_dof_indices:
+            self.posture_cost_vector[dof_idx] = POSTURE_COST_HEAD 
     
     def _setup_joint_indices(self):
         """Setup joint indices for different robot parts."""
@@ -231,11 +235,13 @@ class RBY1WholeBodyIK:
         # Head joints
         self.head_joint_names = [f"head_{i}" for i in range(2)]
         self.head_qpos_indices = []
+        self.head_dof_indices = []
         for name in self.head_joint_names:
             joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
-            if joint_id >= 0:
-                qpos_adr = self.model.jnt_qposadr[joint_id]
-                self.head_qpos_indices.append(qpos_adr)
+            qpos_adr = self.model.jnt_qposadr[joint_id]
+            self.head_qpos_indices.append(qpos_adr)
+            dof_adr = self.model.jnt_dofadr[joint_id]
+            self.head_dof_indices.append(dof_adr)
         
         # All IK-controlled indices (including base now)
         self.ik_controlled_indices = (
@@ -397,7 +403,7 @@ class RBY1WholeBodyIK:
         # Main posture task
         posture_task = mink.PostureTask(
             model=self.model,
-            cost=POSTURE_COST_MAIN  
+            cost=self.posture_cost_vector
         )
         # Set reference posture
         reference_qpos = self._get_nominal_posture(current_qpos)
