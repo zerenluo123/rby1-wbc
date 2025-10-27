@@ -138,7 +138,7 @@ class SharedTargets:
             self.duration = max(0.0, float(duration))
             self.target_set_timestamp = now
 
-    def get_for_ik(self) -> Tuple[
+    def get_for_ik(self, use_interpolation: bool = False) -> Tuple[
         Optional[np.ndarray],
         Optional[np.ndarray],
         Optional[float],
@@ -148,6 +148,9 @@ class SharedTargets:
         Optional[np.ndarray],
         Optional[np.ndarray],
     ]:
+        if not use_interpolation:
+            return self.get_target()
+        
         # Return the linearly interpolated targets based on elapsed time since setting
         current_time = time.monotonic()
         with self.lock:
@@ -155,13 +158,16 @@ class SharedTargets:
             elapsed = max(0.0, current_time - self.target_set_timestamp)
             alpha = min(1.0, elapsed / duration)
 
+            # We don't want to linearly interpolate gripper width
             lt_p = _lerp_value(self.left_gripper_pos_start, self.left_gripper_pos, alpha)
             lt_q = _slerp_quaternion(self.left_gripper_quat_start, self.left_gripper_quat, alpha)
-            lw = _lerp_value(self.left_gripper_width_start, self.left_gripper_width, alpha)
+            # lw = _lerp_value(self.left_gripper_width_start, self.left_gripper_width, alpha)
+            lw = self.left_gripper_width
 
             rt_p = _lerp_value(self.right_gripper_pos_start, self.right_gripper_pos, alpha)
             rt_q = _slerp_quaternion(self.right_gripper_quat_start, self.right_gripper_quat, alpha)
-            rw = _lerp_value(self.right_gripper_width_start, self.right_gripper_width, alpha)
+            # rw = _lerp_value(self.right_gripper_width_start, self.right_gripper_width, alpha)
+            rw = self.right_gripper_width
 
             hp = _lerp_value(self.head_target_pos_start, self.head_target_pos, alpha)
             hq = _slerp_quaternion(self.head_target_quat_start, self.head_target_quat, alpha)
@@ -264,7 +270,8 @@ class RBY1WBC:
         address: str = "localhost:50051",
         ik_frequency_hz: float = 100.0,
         state_frequency_hz: float = 100.0,
-        trajectory_frequency_hz: float = 10.0
+        trajectory_frequency_hz: float = 10.0,
+        use_interpolation: bool = False
     ):
         self.model_path = model_path
         self.address = address
@@ -291,6 +298,7 @@ class RBY1WBC:
 
         self._state_thread: Optional[threading.Thread] = None
         self._ik_thread: Optional[threading.Thread] = None
+        self.use_interpolation = use_interpolation
 
     def start(self) -> None:
         if self._threads_started:
@@ -424,13 +432,12 @@ class RBY1WBC:
             snapshot = self.robot_state.load()
             current_qpos: Optional[np.ndarray] = self.snapshot_to_qpos(snapshot)
             now = time.monotonic()
-            left_pos, left_quat, left_width, right_pos, right_quat, right_width, head_pos, head_quat = self.shared_targets.get_for_ik()
+            left_pos, left_quat, left_width, right_pos, right_quat, right_width, head_pos, head_quat = self.shared_targets.get_for_ik(use_interpolation=self.use_interpolation)
 
             if current_qpos is None or left_pos is None or right_pos is None:
                 self.ik_rate.sleep()
                 continue
 
-            # TODO: Include head target in IK
             sol_qpos, sol_vel, success, _info = self.ik_solver.solve(
                 left_target_pos=left_pos,
                 left_target_quat=left_quat,

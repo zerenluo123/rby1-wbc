@@ -165,7 +165,7 @@ def main() -> None:
     if args.headless:
         os.environ.setdefault("MUJOCO_GL", "egl")
 
-    wbc = RBY1WBC(model_path=args.model, address=args.address, ik_frequency_hz=100.0)
+    wbc = RBY1WBC(model_path=args.model, address=args.address, ik_frequency_hz=100.0, use_interpolation=False)
     wbc.start()
 
     gui = None

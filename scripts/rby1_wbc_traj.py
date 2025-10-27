@@ -341,7 +341,7 @@ def main() -> None:
     if args.headless:
         os.environ.setdefault("MUJOCO_GL", "egl")
 
-    wbc = RBY1WBC(model_path=args.model, address=args.address, ik_frequency_hz=100.0, trajectory_frequency_hz=10.0)
+    wbc = RBY1WBC(model_path=args.model, address=args.address, ik_frequency_hz=100.0, trajectory_frequency_hz=10.0, use_interpolation=True)
     wbc.start()
 
     poses_list, widths_list = load_trajectory(traj_dir=args.trajectory, client=wbc, index=args.index, use_head=False, align_mode="relative")
