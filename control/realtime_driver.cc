@@ -146,7 +146,7 @@ class Rby1Component {
     }
 
     if ((steady_now_us - last_command_time_) > kCommandTimeoutUs) {
-      std::cerr << "Stopping commands for " << name_ << std::endl;
+      // std::cerr << "Stopping commands for " << name_ << std::endl;
       last_command_time_ = 0;
       command_.reset();
       for (size_t i = 0; i < dof_.size(); ++i) {
