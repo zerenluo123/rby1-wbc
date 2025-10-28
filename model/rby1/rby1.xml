@@ -692,14 +692,7 @@
     <position name="head_0_act" joint="head_0" kp="4000" kv="400" ctrlrange="-0.523 0.523"/>
     <position name="head_1_act" joint="head_1" kp="4000" kv="400" ctrlrange="-0.35 1.57"/>
 
-    <!-- <motor name="right_finger_act" joint="gripper_finger_r2" />
-    <motor name="left_finger_act" joint="gripper_finger_l1" /> -->
   </actuator>
-
-  <!-- <equality>
-    <joint name="right_finger" joint1="gripper_finger_r1" joint2="gripper_finger_r2" polycoef="0 -1 0 0 0"/>
-    <joint name="left_finger" joint1="gripper_finger_l1" joint2="gripper_finger_l2" polycoef="0 -1 0 0 0"/>
-  </equality> -->
 </mujoco>
 
   <!-- <worldbody>
