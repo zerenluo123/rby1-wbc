@@ -75,6 +75,11 @@ class RBY1WBCTrajectory:
 
         self._left_ee_site_id = self.model.site("end_effector_l").id
         self._right_ee_site_id = self.model.site("end_effector_r").id
+        self._head_ee_site_id = self.model.site("head").id
+        base_data = mujoco.MjData(self.model)
+        mujoco.mj_forward(self.model, base_data)
+        base_mat = base_data.site_xmat[self._head_ee_site_id].copy()
+        self._head_site_base_rot = base_mat.reshape(3, 3, order="F")
 
     def _wait_for_initial_snapshot(self, timeout_sec: float = 5.0):
         deadline = time.monotonic() + timeout_sec
@@ -110,25 +115,56 @@ class RBY1WBCTrajectory:
             except Exception as exc:  # pragma: no cover - defensive
                 print(f"[visualize] snapshot apply error: {exc}")
 
-        policy_left_pos, policy_left_quat, _plw, policy_right_pos, policy_right_quat, _prw, _hpp, _hpq = self.wbc.shared_targets.get_target()
+        (
+            policy_left_pos,
+            policy_left_quat,
+            _plw,
+            policy_right_pos,
+            policy_right_quat,
+            _prw,
+            policy_head_pos,
+            policy_head_quat,
+        ) = self.wbc.shared_targets.get_target()
         actual_left_pos, actual_left_quat = self._get_site_pose(self._left_ee_site_id)
         actual_right_pos, actual_right_quat = self._get_site_pose(self._right_ee_site_id)
+        actual_head_pos, actual_head_quat = self._get_site_pose(self._head_ee_site_id)
+
+        policy_head_pos_viz, policy_head_quat_viz = self._prepare_head_policy_pose(
+            policy_head_pos,
+            policy_head_quat,
+            actual_head_pos,
+        )
 
         self._update_pose_markers(
             policy_left_pos,
             policy_left_quat,
             policy_right_pos,
             policy_right_quat,
+            policy_head_pos_viz,
+            policy_head_quat_viz,
             actual_left_pos,
             actual_left_quat,
             actual_right_pos,
             actual_right_quat,
+            actual_head_pos,
+            actual_head_quat,
         )
         left_err = self._format_ee_error("L", policy_left_pos, policy_left_quat, actual_left_pos, actual_left_quat)
         right_err = self._format_ee_error("R", policy_right_pos, policy_right_quat, actual_right_pos, actual_right_quat)
+        head_err = self._format_ee_error(
+            "H",
+            policy_head_pos_viz,
+            policy_head_quat_viz,
+            actual_head_pos,
+            actual_head_quat,
+            include_position=False,
+        )
 
-        if left_err is not None and right_err is not None:
-            print(f"[EE error] {left_err} | {right_err}", end="\r", flush=True)
+        errors = [err for err in (left_err, right_err, head_err) if err is not None]
+        if errors:
+            msg = f"[EE error] {' | '.join(errors)}"
+            sys.stdout.write(f"\r{msg}\x1b[K")
+            sys.stdout.flush()
 
         mujoco.mj_camlight(self.model, self.data)
         self.viewer.sync()
@@ -140,10 +176,14 @@ class RBY1WBCTrajectory:
         policy_left_quat: Optional[np.ndarray],
         policy_right_pos: Optional[np.ndarray],
         policy_right_quat: Optional[np.ndarray],
+        policy_head_pos: Optional[np.ndarray],
+        policy_head_quat: Optional[np.ndarray],
         actual_left_pos: np.ndarray,
         actual_left_quat: np.ndarray,
         actual_right_pos: np.ndarray,
         actual_right_quat: np.ndarray,
+        actual_head_pos: np.ndarray,
+        actual_head_quat: np.ndarray,
     ) -> None:
         if self.viewer is None:
             return
@@ -159,8 +199,10 @@ class RBY1WBCTrajectory:
 
         self._add_pose_marker(scene, policy_left_pos, policy_left_quat, policy_alpha, policy_width)
         self._add_pose_marker(scene, policy_right_pos, policy_right_quat, policy_alpha, policy_width)
+        self._add_pose_marker(scene, policy_head_pos, policy_head_quat, policy_alpha, policy_width)
         self._add_pose_marker(scene, actual_left_pos, actual_left_quat, actual_alpha, actual_width)
         self._add_pose_marker(scene, actual_right_pos, actual_right_quat, actual_alpha, actual_width)
+        self._add_pose_marker(scene, actual_head_pos, actual_head_quat, actual_alpha, actual_width)
 
     def _add_pose_marker(
         self,
@@ -225,13 +267,84 @@ class RBY1WBCTrajectory:
         target_quat: Optional[np.ndarray],
         actual_pos: np.ndarray,
         actual_quat: np.ndarray,
-    ) -> str:
+        include_position: bool = True,
+    ) -> Optional[str]:
         if target_pos is None or target_quat is None:
-             return None
-        pos_err = np.asarray(target_pos, dtype=np.float64) - np.asarray(actual_pos, dtype=np.float64)
-        pos_err_norm = float(np.linalg.norm(pos_err))
+            return None
+        parts: list[str] = []
+        if include_position:
+            pos_err = np.asarray(target_pos, dtype=np.float64) - np.asarray(actual_pos, dtype=np.float64)
+            pos_err_norm = float(np.linalg.norm(pos_err))
+            parts.append(f"dpos={pos_err_norm:.4f}")
         quat_err = _quat_angle_error(target_quat, actual_quat)
-        return f"{label} dpos={pos_err_norm:.4f} dq={quat_err:.4f}"
+        parts.append(f"dq={quat_err:.4f}")
+        return f"{label} {' '.join(parts)}"
+
+    def _prepare_head_policy_pose(
+        self,
+        policy_pos: Optional[np.ndarray],
+        policy_quat: Optional[np.ndarray],
+        actual_pos: np.ndarray,
+    ) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        if policy_quat is None:
+            return None, None
+        projected_quat = self._project_head_orientation(policy_quat)
+        if projected_quat is None:
+            return None, None
+        return actual_pos.copy(), projected_quat
+
+    def _project_head_orientation(self, policy_quat: np.ndarray) -> Optional[np.ndarray]:
+        quat_arr = np.asarray(policy_quat, dtype=np.float64)
+        norm = np.linalg.norm(quat_arr)
+        if norm < 1e-9:
+            return None
+        quat_arr = quat_arr / norm
+
+        target_rot_flat = np.zeros(9, dtype=np.float64)
+        mujoco.mju_quat2Mat(target_rot_flat, quat_arr)
+        target_rot = target_rot_flat.reshape(3, 3, order="F")
+
+        relative_rot = self._head_site_base_rot.T @ target_rot
+
+        rel_20 = float(np.clip(relative_rot[2, 0], -1.0, 1.0))
+        pitch = -math.asin(rel_20)
+        cos_pitch = math.cos(pitch)
+        if abs(cos_pitch) < 1e-8:
+            yaw = math.atan2(-relative_rot[0, 1], relative_rot[1, 1])
+        else:
+            yaw = math.atan2(relative_rot[1, 0], relative_rot[0, 0])
+
+        projected_rot = self._head_site_base_rot @ self._rotation_z(yaw) @ self._rotation_y(pitch)
+        projected_flat = projected_rot.reshape(9, order="F")
+        projected_quat = np.zeros(4, dtype=np.float64)
+        mujoco.mju_mat2Quat(projected_quat, projected_flat)
+        return projected_quat
+
+    @staticmethod
+    def _rotation_z(angle: float) -> np.ndarray:
+        c = math.cos(angle)
+        s = math.sin(angle)
+        return np.array(
+            [
+                [c, -s, 0.0],
+                [s, c, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+
+    @staticmethod
+    def _rotation_y(angle: float) -> np.ndarray:
+        c = math.cos(angle)
+        s = math.sin(angle)
+        return np.array(
+            [
+                [c, 0.0, s],
+                [0.0, 1.0, 0.0],
+                [-s, 0.0, c],
+            ],
+            dtype=np.float64,
+        )
 
     @staticmethod
     def _transform_to_pose(transform) -> tuple[np.ndarray, np.ndarray]:
@@ -243,7 +356,7 @@ class RBY1WBCTrajectory:
 
     def trajectory_loop(self) -> None:
         """Stream the full trajectory to the WBC at trajectory_rate until finished."""
-        input("Press Enter to start streaming the trajectory?")
+        input("Press [Enter] to start streaming the trajectory.")
         num_steps = min(len(self.poses_list), len(self.widths_list))
         while self.trajectory_index < num_steps:
 
@@ -353,7 +466,7 @@ def main() -> None:
     wbc = RBY1WBC(model_path=args.model, address=args.address, ik_frequency_hz=100.0, trajectory_frequency_hz=10.0, use_interpolation=True)
     wbc.start()
 
-    poses_list, widths_list = load_trajectory(traj_dir=args.trajectory, client=wbc, index=args.index, use_head=False, align_mode="relative")
+    poses_list, widths_list = load_trajectory(traj_dir=args.trajectory, client=wbc, index=args.index, use_head=True, align_mode="relative")
     if args.headless:
         os.environ.setdefault("MUJOCO_GL", "egl")
     gui = None
