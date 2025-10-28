@@ -7,6 +7,7 @@ import math
 import os
 import sys
 import time
+import subprocess
 from pathlib import Path
 from typing import Optional
 import mujoco
@@ -335,16 +336,26 @@ def main() -> None:
         action="store_true",
         help="Skip launching the MuJoCo viewer (useful for debugging controller only).",
     )
-    
+    parser.add_argument(
+        "--init-file",
+        default=PROJECT_ROOT + "/demo/init_position.json",
+        help="JSON file describing initial joint targets for move_initial subprocess.",
+    )    
     args = parser.parse_args()
 
-    if args.headless:
-        os.environ.setdefault("MUJOCO_GL", "egl")
+    # Initialize to the init pose
+    script_path = PROJECT_ROOT + "/scripts/rby1_move_initial.py"
+    cmd = [sys.executable, str(script_path), "--address", args.address, "--init-file", args.init_file]
+    result = subprocess.run(cmd, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"Initial pose helper failed with exit code {result.returncode}")
 
     wbc = RBY1WBC(model_path=args.model, address=args.address, ik_frequency_hz=100.0, trajectory_frequency_hz=10.0, use_interpolation=True)
     wbc.start()
 
     poses_list, widths_list = load_trajectory(traj_dir=args.trajectory, client=wbc, index=args.index, use_head=False, align_mode="relative")
+    if args.headless:
+        os.environ.setdefault("MUJOCO_GL", "egl")
     gui = None
     try:
         gui = RBY1WBCTrajectory(model_path=args.model, wbc=wbc, headless=args.headless, trajectory_frequency_hz=10.0, poses_list=poses_list, widths_list=widths_list)
