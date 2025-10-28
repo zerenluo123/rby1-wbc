@@ -146,7 +146,7 @@ class Rby1Component {
     }
 
     if ((steady_now_us - last_command_time_) > kCommandTimeoutUs) {
-      std::cerr << "Stopping commands for " << name_ << std::endl;
+      // std::cerr << "Stopping commands for " << name_ << std::endl;
       last_command_time_ = 0;
       command_.reset();
       for (size_t i = 0; i < dof_.size(); ++i) {
@@ -598,20 +598,20 @@ rb::ControlInput<y1_instance> RealtimeDriver::DoControl(
   }
 
   // Periodic debug: print wheel control modes and targets every 0.5s.
-  static int64_t last_log_us = 0;
-  if (steady_now - last_log_us > 500000) {
-    last_log_us = steady_now;
-    std::ostringstream oss;
-    oss << "[ctl] wheel modes/targets:";
-    for (int i = 0; i < static_cast<int>(y1_instance::kMobilityIdx.size()); ++i) {
-      const int idx = y1_instance::kMobilityIdx[i];
-      const auto mode = state_->control_input.mode[idx];
-      const double tgt = state_->control_input.target[idx];
-      oss << " [" << i << ":" << (mode == rb::kVelocityControlMode ? 'V' : 'P')
-          << "," << tgt << "]";
-    }
-    std::cout << oss.str() << std::endl;
-  }
+  // static int64_t last_log_us = 0;
+  // if (steady_now - last_log_us > 500000) {
+  //   last_log_us = steady_now;
+  //   std::ostringstream oss;
+  //   oss << "[ctl] wheel modes/targets:";
+  //   for (int i = 0; i < static_cast<int>(y1_instance::kMobilityIdx.size()); ++i) {
+  //     const int idx = y1_instance::kMobilityIdx[i];
+  //     const auto mode = state_->control_input.mode[idx];
+  //     const double tgt = state_->control_input.target[idx];
+  //     oss << " [" << i << ":" << (mode == rb::kVelocityControlMode ? 'V' : 'P')
+  //         << "," << tgt << "]";
+  //   }
+  //   std::cout << oss.str() << std::endl;
+  // }
 
   state_->control_input.finish = stop_requested_.load();
   return state_->control_input;

@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from queue import SimpleQueue
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import mujoco
 import numpy as np
@@ -33,36 +33,48 @@ from rby1.control import (
 # TRI's IK runs at 500 hz and ours at 100 hz, so scale the gains by 5x
 BASE_ERROR_GAIN = np.array([0.2, 0.2, 0.2], dtype=float)
 # Might need to tune this more
-BASE_VELOCITY_GAIN = np.array([0.09, 0.09, 0.5], dtype=float)
+BASE_VELOCITY_GAIN = np.array([0.09, 0.09, 0.1], dtype=float)
 
 class RobotStateBuffer:
     """Stores the latest robot snapshot retrieved from the controller."""
-
     def __init__(self):
-        self._queue: SimpleQueue[RobotSnapshot] = SimpleQueue()
+        self._lock = threading.Lock()
         self.latest: Optional[RobotSnapshot] = None
 
     def store(self, snapshot: RobotSnapshot) -> None:
-        self._queue.put_nowait(snapshot)
-        if self._queue.qsize() > 1:
-            self._queue.get_nowait()
+        with self._lock:
+            self.latest = snapshot
 
     def load(self) -> Optional[RobotSnapshot]:
-        if not self._queue.empty():
-            self.latest = self._queue.get_nowait()
-        return self.latest
+        with self._lock:
+            return self.latest
 
 
 @dataclass
 class SharedTargets:
     """Thread-safe shared targets and current qpos snapshot for IK."""
-
     lock: threading.Lock = field(default_factory=threading.Lock)
-    left_target_pos: Optional[np.ndarray] = None
-    left_target_quat: Optional[np.ndarray] = None
-    right_target_pos: Optional[np.ndarray] = None
-    right_target_quat: Optional[np.ndarray] = None
-    current_qpos: Optional[np.ndarray] = None
+    duration: float = 0.1 # 10Hz
+    target_set_timestamp: float = 0.0
+
+    left_gripper_pos_start: Optional[np.ndarray] = None
+    left_gripper_quat_start: Optional[np.ndarray] = None
+    left_gripper_width_start: Optional[float] = None
+    left_gripper_pos: Optional[np.ndarray] = None
+    left_gripper_quat: Optional[np.ndarray] = None
+    left_gripper_width: Optional[float] = None
+
+    right_gripper_pos_start: Optional[np.ndarray] = None
+    right_gripper_quat_start: Optional[np.ndarray] = None
+    right_gripper_width_start: Optional[float] = None
+    right_gripper_pos: Optional[np.ndarray] = None
+    right_gripper_quat: Optional[np.ndarray] = None
+    right_gripper_width: Optional[float] = None
+
+    head_target_pos_start: Optional[np.ndarray] = None
+    head_target_quat_start: Optional[np.ndarray] = None
+    head_target_pos: Optional[np.ndarray] = None
+    head_target_quat: Optional[np.ndarray] = None
 
     def set_targets(
         self,
@@ -70,31 +82,173 @@ class SharedTargets:
         left_quat: np.ndarray,
         right_pos: np.ndarray,
         right_quat: np.ndarray,
-        qpos: Optional[np.ndarray] = None,
+        left_width: Optional[float] = None,
+        right_width: Optional[float] = None,
+        head_pos: Optional[np.ndarray] = None,
+        head_quat: Optional[np.ndarray] = None,
+        duration: float = 0.1,
+        timestamp: Optional[float] = None,
     ) -> None:
         with self.lock:
-            self.left_target_pos = left_pos.copy()
-            self.left_target_quat = left_quat.copy()
-            self.right_target_pos = right_pos.copy()
-            self.right_target_quat = right_quat.copy()
-            self.current_qpos = None if qpos is None else qpos.copy()
+            now = time.monotonic() if timestamp is None else float(timestamp)
 
-    def get_for_ik(
-        self,
-    ) -> Tuple[
+            # Store previous targets for interpolation
+            prev_left_pos = self.left_gripper_pos.copy() if self.left_gripper_pos is not None else None
+            prev_left_quat = self.left_gripper_quat.copy() if self.left_gripper_quat is not None else None
+            prev_left_width = self.left_gripper_width
+
+            prev_right_pos = self.right_gripper_pos.copy() if self.right_gripper_pos is not None else None
+            prev_right_quat = self.right_gripper_quat.copy() if self.right_gripper_quat is not None else None
+            prev_right_width = self.right_gripper_width
+
+            prev_head_pos = self.head_target_pos.copy() if self.head_target_pos is not None else None
+            prev_head_quat = self.head_target_quat.copy() if self.head_target_quat is not None else None
+
+            self.left_gripper_pos_start = prev_left_pos if prev_left_pos is not None else left_pos.copy()
+            self.left_gripper_quat_start = prev_left_quat if prev_left_quat is not None else left_quat.copy()
+            self.left_gripper_width_start = prev_left_width if prev_left_width is not None else (None if left_width is None else float(left_width))
+
+            self.right_gripper_pos_start = prev_right_pos if prev_right_pos is not None else right_pos.copy()
+            self.right_gripper_quat_start = prev_right_quat if prev_right_quat is not None else right_quat.copy()
+            self.right_gripper_width_start = prev_right_width if prev_right_width is not None else (None if right_width is None else float(right_width))
+
+            self.head_target_pos_start = prev_head_pos if prev_head_pos is not None else (None if head_pos is None else head_pos.copy())
+            self.head_target_quat_start = prev_head_quat if prev_head_quat is not None else (None if head_quat is None else head_quat.copy())
+
+            # Set new targets
+            self.left_gripper_pos = left_pos.copy()
+            self.left_gripper_quat = left_quat.copy()
+            self.right_gripper_pos = right_pos.copy()
+            self.right_gripper_quat = right_quat.copy()
+            self.left_gripper_width = None if left_width is None else float(left_width)
+            self.right_gripper_width = None if right_width is None else float(right_width)
+            self.head_target_pos = None if head_pos is None else head_pos.copy()
+            self.head_target_quat = None if head_quat is None else head_quat.copy()
+
+            self.duration = max(0.0, float(duration))
+            self.target_set_timestamp = now
+
+    def get_for_ik(self, use_interpolation: bool = False) -> Tuple[
         Optional[np.ndarray],
         Optional[np.ndarray],
+        Optional[float],
         Optional[np.ndarray],
+        Optional[np.ndarray],
+        Optional[float],
+        Optional[np.ndarray],
+        Optional[np.ndarray],
+    ]:
+        if not use_interpolation:
+            return self.get_target()
+        
+        # Return the linearly interpolated targets based on elapsed time since setting
+        current_time = time.monotonic()
+        with self.lock:
+            duration = max(self.duration, 0.0)
+            elapsed = max(0.0, current_time - self.target_set_timestamp)
+            alpha = min(1.0, elapsed / duration)
+
+            # We don't want to linearly interpolate gripper width
+            lt_p = _lerp_value(self.left_gripper_pos_start, self.left_gripper_pos, alpha)
+            lt_q = _slerp_quaternion(self.left_gripper_quat_start, self.left_gripper_quat, alpha)
+            # lw = _lerp_value(self.left_gripper_width_start, self.left_gripper_width, alpha)
+            lw = self.left_gripper_width
+
+            rt_p = _lerp_value(self.right_gripper_pos_start, self.right_gripper_pos, alpha)
+            rt_q = _slerp_quaternion(self.right_gripper_quat_start, self.right_gripper_quat, alpha)
+            # rw = _lerp_value(self.right_gripper_width_start, self.right_gripper_width, alpha)
+            rw = self.right_gripper_width
+
+            hp = _lerp_value(self.head_target_pos_start, self.head_target_pos, alpha)
+            hq = _slerp_quaternion(self.head_target_quat_start, self.head_target_quat, alpha)
+
+        return lt_p, lt_q, lw, rt_p, rt_q, rw, hp, hq
+
+    def get_target(self) -> Tuple[
+        Optional[np.ndarray],
+        Optional[np.ndarray],
+        Optional[float],
+        Optional[np.ndarray],
+        Optional[np.ndarray],
+        Optional[float],
         Optional[np.ndarray],
         Optional[np.ndarray],
     ]:
         with self.lock:
-            lt_p = None if self.left_target_pos is None else self.left_target_pos.copy()
-            lt_q = None if self.left_target_quat is None else self.left_target_quat.copy()
-            rt_p = None if self.right_target_pos is None else self.right_target_pos.copy()
-            rt_q = None if self.right_target_quat is None else self.right_target_quat.copy()
-            q = None if self.current_qpos is None else self.current_qpos.copy()
-        return lt_p, lt_q, rt_p, rt_q, q
+            lt_p = None if self.left_gripper_pos is None else self.left_gripper_pos.copy()
+            lt_q = None if self.left_gripper_quat is None else self.left_gripper_quat.copy()
+            lw = self.left_gripper_width
+
+            rt_p = None if self.right_gripper_pos is None else self.right_gripper_pos.copy()
+            rt_q = None if self.right_gripper_quat is None else self.right_gripper_quat.copy()
+            rw = self.right_gripper_width
+
+            hp = None if self.head_target_pos is None else self.head_target_pos.copy()
+            hq = None if self.head_target_quat is None else self.head_target_quat.copy()
+
+        return lt_p, lt_q, lw, rt_p, rt_q, rw, hp, hq
+
+
+def _lerp_value(
+    start: Optional[Union[np.ndarray, float]],
+    end: Optional[Union[np.ndarray, float]],
+    alpha: float,
+):
+    if end is None:
+        return None
+    if start is None:
+        if isinstance(end, np.ndarray):
+            return end.copy()
+        return float(end)
+    alpha_clamped = max(0.0, min(1.0, alpha))
+    if isinstance(end, np.ndarray):
+        return (1.0 - alpha_clamped) * start + alpha_clamped * end
+    return float((1.0 - alpha_clamped) * start + alpha_clamped * end)
+
+
+def _normalize_quaternion(quat: np.ndarray) -> np.ndarray:
+    norm = np.linalg.norm(quat)
+    if norm < 1e-9:
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+    return quat / norm
+
+
+def _slerp_quaternion(
+    start: Optional[np.ndarray],
+    end: Optional[np.ndarray],
+    alpha: float,
+) -> Optional[np.ndarray]:
+    if end is None:
+        return None
+    if start is None:
+        return end.copy()
+
+    start_norm = _normalize_quaternion(start)
+    end_norm = _normalize_quaternion(end)
+
+    dot = float(np.dot(start_norm, end_norm))
+    if dot < 0.0:
+        end_norm = -end_norm
+        dot = -dot
+    dot = max(-1.0, min(1.0, dot))
+
+    if dot > 0.9995:
+        result = start_norm + alpha * (end_norm - start_norm)
+        return _normalize_quaternion(result)
+
+    theta_0 = math.acos(dot)
+    sin_theta_0 = math.sin(theta_0)
+    if sin_theta_0 < 1e-6:
+        return end_norm.copy()
+
+    alpha_clamped = max(0.0, min(1.0, alpha))
+    theta = theta_0 * alpha_clamped
+    sin_theta = math.sin(theta)
+
+    s0 = math.cos(theta) - dot * sin_theta / sin_theta_0
+    s1 = sin_theta / sin_theta_0
+    result = s0 * start_norm + s1 * end_norm
+    return _normalize_quaternion(result)
 
 
 class RBY1WBC:
@@ -105,12 +259,15 @@ class RBY1WBC:
         model_path: str,
         address: str = "localhost:50051",
         ik_frequency_hz: float = 100.0,
-        state_frequency_hz: float = 200.0,
+        state_frequency_hz: float = 100.0,
+        trajectory_frequency_hz: float = 10.0,
+        use_interpolation: bool = False
     ):
         self.model_path = model_path
         self.address = address
         self.ik_rate = RateLimiter(frequency=ik_frequency_hz, warn=False)
         self.state_poll_rate = RateLimiter(frequency=state_frequency_hz, warn=False)
+        self.trajectory_frequency_hz = trajectory_frequency_hz
 
         self.shared_targets = SharedTargets()
         self.robot_state = RobotStateBuffer()
@@ -126,13 +283,12 @@ class RBY1WBC:
         mujoco.mj_forward(self.model, self.data)
 
         self.ik_solver = RBY1WholeBodyIK()
-        self.prev_qpos = self.data.qpos.copy()
-
         self._build_joint_mapping()
         self._extract_base_origin()
 
         self._state_thread: Optional[threading.Thread] = None
         self._ik_thread: Optional[threading.Thread] = None
+        self.use_interpolation = use_interpolation
 
     def start(self) -> None:
         if self._threads_started:
@@ -163,9 +319,25 @@ class RBY1WBC:
         left_quat: np.ndarray,
         right_pos: np.ndarray,
         right_quat: np.ndarray,
-        qpos: Optional[np.ndarray] = None,
+        left_width: Optional[float] = None,
+        right_width: Optional[float] = None,
+        head_pos: Optional[np.ndarray] = None,
+        head_quat: Optional[np.ndarray] = None,
+        duration: float = 0.1,
+        timestamp: Optional[float] = None,
     ) -> None:
-        self.shared_targets.set_targets(left_pos, left_quat, right_pos, right_quat, qpos)
+        self.shared_targets.set_targets(
+            left_pos,
+            left_quat,
+            right_pos,
+            right_quat,
+            left_width=left_width,
+            right_width=right_width,
+            head_pos=head_pos,
+            head_quat=head_quat,
+            duration=duration,
+            timestamp=timestamp,
+        )
 
     def get_latest_robot_state(self) -> Optional[RobotSnapshot]:
         return self.robot_state.load()
@@ -178,7 +350,7 @@ class RBY1WBC:
             if snapshot is not None and snapshot.is_valid:
                 return snapshot
             time.sleep(0.005)
-        return snapshot if snapshot is not None and snapshot.is_valid else None
+        raise Exception("Timeout waiting for first valid robot state snapshot")
 
     def snapshot_to_qpos(self, snapshot: RobotSnapshot) -> Optional[np.ndarray]:
         if snapshot is None or not snapshot.is_valid:
@@ -207,29 +379,11 @@ class RBY1WBC:
     def _ik_loop(self) -> None:
         while not self._stop.is_set():
             snapshot = self.robot_state.load()
-            qpos_from_snapshot: Optional[np.ndarray] = None
-            if snapshot is not None and snapshot.is_valid:
-                try:
-                    with self._model_lock:
-                        qpos_from_snapshot = self._snapshot_to_qpos(snapshot)
-                except Exception as exc:  # pragma: no cover - defensive
-                    print(f"[wbc] snapshot conversion error: {exc}")
+            current_qpos: Optional[np.ndarray] = self.snapshot_to_qpos(snapshot)
+            now = time.monotonic()
+            left_pos, left_quat, left_width, right_pos, right_quat, right_width, head_pos, head_quat = self.shared_targets.get_for_ik(use_interpolation=self.use_interpolation)
 
-            left_pos, left_quat, right_pos, right_quat, qpos_viewer = self.shared_targets.get_for_ik()
-            qpos_for_ik = qpos_from_snapshot if qpos_from_snapshot is not None else qpos_viewer
-
-            if isinstance(qpos_for_ik, RobotSnapshot):
-                try:
-                    with self._model_lock:
-                        qpos_for_ik = self._snapshot_to_qpos(qpos_for_ik)
-                except Exception as exc:  # pragma: no cover - defensive
-                    print(f"[wbc] snapshot-to-qpos fallback error: {exc}")
-                    qpos_for_ik = None
-
-            if qpos_for_ik is not None and not isinstance(qpos_for_ik, np.ndarray):
-                qpos_for_ik = np.asarray(qpos_for_ik, dtype=float)
-
-            if qpos_for_ik is None or left_pos is None or right_pos is None:
+            if current_qpos is None or left_pos is None or right_pos is None:
                 self.ik_rate.sleep()
                 continue
 
@@ -238,14 +392,18 @@ class RBY1WBC:
                 left_target_quat=left_quat,
                 right_target_pos=right_pos,
                 right_target_quat=right_quat,
-                current_qpos=qpos_for_ik,
+                head_target_pos=head_pos,
+                head_target_quat=head_quat,
+                current_qpos=current_qpos,
                 dt=self.ik_rate.dt,
             )
             if not success:
                 print(f"[wbc] IK failed: {_info}")
 
             try:
-                body_targets, twist = self._compute_commands(sol_qpos, sol_vel, qpos_for_ik)
+                # TODO: Add gripper commands
+                body_targets = self._compute_body_commands(sol_qpos)
+                twist = self._compute_base_twist_command(sol_qpos, sol_vel, current_qpos)
                 self.controller.set_body_position_targets(body_targets.tolist())
                 self.controller.set_base_twist_command(twist)
             except Exception as exc:  # pragma: no cover - defensive
@@ -253,12 +411,7 @@ class RBY1WBC:
 
             self.ik_rate.sleep()
 
-    def _compute_commands(
-        self,
-        sol_qpos: np.ndarray,
-        sol_qvel: np.ndarray,
-        cur_qpos: np.ndarray,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    def _compute_body_commands(self, sol_qpos: np.ndarray) -> np.ndarray:
         positions_sdk = np.zeros(len(self._sdk_joint_names), dtype=float)
         for i, adr in enumerate(self._sdk_to_mj_qadr):
             if adr is not None:
@@ -271,12 +424,9 @@ class RBY1WBC:
         head_idxs = [name_to_idx[f"head_{i}"] for i in range(2)]
         ordered = torso_idxs + left_idxs + right_idxs + head_idxs
         body_targets = positions_sdk[ordered]
-        twist = self._compute_base_twist_command(sol_qpos, sol_qvel, cur_qpos)
-        return body_targets, twist
+        return body_targets
 
-    def _compute_base_twist_command(
-        self, sol_qpos: np.ndarray, sol_qvel: np.ndarray, cur_qpos: np.ndarray
-    ) -> np.ndarray:
+    def _compute_base_twist_command(self, sol_qpos: np.ndarray, sol_qvel: np.ndarray, cur_qpos: np.ndarray) -> np.ndarray:
         measured_x = float(cur_qpos[0])
         measured_y = float(cur_qpos[1])
         measured_yaw = self._yaw_from_quat(cur_qpos[3:7])
@@ -312,10 +462,7 @@ class RBY1WBC:
         return np.array([vx_body, vy_body, velocity_command_world[2]], dtype=float)
 
     def _snapshot_to_qpos(self, snapshot: RobotSnapshot) -> np.ndarray:
-        if hasattr(self, "prev_qpos") and self.prev_qpos is not None:
-            qpos = self.prev_qpos.copy()
-        else:
-            qpos = np.zeros(self.model.nq, dtype=float)
+        qpos = np.zeros(self.model.nq, dtype=float)
 
         base_adr = getattr(self, "_base_free_adr", None)
         base_origin = getattr(self, "_base_origin_pos", np.zeros(3, dtype=float))
@@ -336,8 +483,6 @@ class RBY1WBC:
             adr = mapping[idx]
             if adr is not None:
                 qpos[adr] = joint_positions[idx]
-
-        self.prev_qpos = qpos.copy()
         return qpos
 
     def _build_joint_mapping(self) -> None:

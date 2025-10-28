@@ -37,6 +37,8 @@ class RBY1WBCGui:
 
         self.ee_l_mid = self.model.body("ee_l_target").mocapid[0]
         self.ee_r_mid = self.model.body("ee_r_target").mocapid[0]
+        self.head_mid = self.model.body("head_target").mocapid[0]
+        self._head_site_id = self.model.site("head").id
 
         snapshot = self._wait_for_initial_snapshot()
         if snapshot is None:
@@ -45,12 +47,15 @@ class RBY1WBCGui:
 
         left_nominal = self.site_pos("end_effector_l", self.data.qpos)
         right_nominal = self.site_pos("end_effector_r", self.data.qpos)
+        head_nominal_pos, head_nominal_quat = self.site_pose("head", self.data.qpos)
         self.data.mocap_pos[self.ee_l_mid] = left_nominal
         self.data.mocap_pos[self.ee_r_mid] = right_nominal
+        self.data.mocap_pos[self.head_mid] = head_nominal_pos
         l_q = self.data.xquat[self.model.body("EE_BODY_L").id].copy()
         r_q = self.data.xquat[self.model.body("EE_BODY_R").id].copy()
         self.data.mocap_quat[self.ee_l_mid] = l_q
         self.data.mocap_quat[self.ee_r_mid] = r_q
+        self.data.mocap_quat[self.head_mid] = head_nominal_quat
 
         viewer = mujoco.viewer.launch_passive(
             model=self.model, data=self.data, show_left_ui=False, show_right_ui=False
@@ -75,11 +80,18 @@ class RBY1WBCGui:
         self.data.qpos[:] = qpos
         mujoco.mj_forward(self.model, self.data)
 
-    def site_pos(self, site_name: str, qpos: np.ndarray) -> np.ndarray:
+    def site_pose(self, site_name: str, qpos: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         self.data.qpos[:] = qpos
         mujoco.mj_forward(self.model, self.data)
         sid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, site_name)
-        return self.data.site_xpos[sid].copy()
+        pos = self.data.site_xpos[sid].copy()
+        quat = np.zeros(4)
+        mujoco.mju_mat2Quat(quat, self.data.site_xmat[sid])
+        return pos, quat
+
+    def site_pos(self, site_name: str, qpos: np.ndarray) -> np.ndarray:
+        pos, _ = self.site_pose(site_name, qpos)
+        return pos
 
     def visualize_loop(self) -> None:
         snapshot = self.wbc.get_latest_robot_state()
@@ -91,10 +103,19 @@ class RBY1WBCGui:
 
         left_pos = self.data.mocap_pos[self.ee_l_mid].copy()
         right_pos = self.data.mocap_pos[self.ee_r_mid].copy()
+        head_pos = self.data.mocap_pos[self.head_mid].copy()
         left_quat = self.data.mocap_quat[self.ee_l_mid].copy()
         right_quat = self.data.mocap_quat[self.ee_r_mid].copy()
+        head_quat = self.data.mocap_quat[self.head_mid].copy()
 
-        self.wbc.update_targets(left_pos, left_quat, right_pos, right_quat, self.data.qpos)
+        self.wbc.update_targets(
+            left_pos,
+            left_quat,
+            right_pos,
+            right_quat,
+            head_pos=head_pos,
+            head_quat=head_quat,
+        )
 
         mujoco.mj_camlight(self.model, self.data)
         self.viewer.sync()
@@ -144,7 +165,7 @@ def main() -> None:
     if args.headless:
         os.environ.setdefault("MUJOCO_GL", "egl")
 
-    wbc = RBY1WBC(model_path=args.model, address=args.address, ik_frequency_hz=100.0)
+    wbc = RBY1WBC(model_path=args.model, address=args.address, ik_frequency_hz=100.0, use_interpolation=False)
     wbc.start()
 
     gui = None
