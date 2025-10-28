@@ -33,7 +33,7 @@ from rby1.control import (
 # TRI's IK runs at 500 hz and ours at 100 hz, so scale the gains by 5x
 BASE_ERROR_GAIN = np.array([0.2, 0.2, 0.2], dtype=float)
 # Might need to tune this more
-BASE_VELOCITY_GAIN = np.array([0.09, 0.09, 0.5], dtype=float)
+BASE_VELOCITY_GAIN = np.array([0.09, 0.09, 0.1], dtype=float)
 
 class RobotStateBuffer:
     """Stores the latest robot snapshot retrieved from the controller."""

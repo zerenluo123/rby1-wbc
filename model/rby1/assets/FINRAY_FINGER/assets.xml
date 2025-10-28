@@ -7,8 +7,8 @@
             shininess="0.0"/>
   <mesh name="finray_finger_visual"
         file="./one_piece_wide_grasp_finray_finger.obj"
-        scale="0.76923076923 1.0 1.0"/>
+        scale="1.0 1.0 1.0"/>
   <mesh name="finray_finger_collider"
         file="./finray_collider.obj"
-        scale="0.76923076923 1.0 1.0"/>
+        scale="1.0 1.0 1.0"/>
 </mujoco>
