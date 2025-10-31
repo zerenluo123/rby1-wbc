@@ -35,6 +35,16 @@ BASE_ERROR_GAIN = np.array([0.2, 0.2, 0.2], dtype=float)
 # Might need to tune this more
 BASE_VELOCITY_GAIN = np.array([0.09, 0.09, 0.1], dtype=float)
 
+# Init Position
+INIT_POSITION={ 
+    "torso": np.array([0.0, 0.7854, -1.5708, 0.7854, 0.0, 0.0]), 
+    "left_arm": np.array([0.0, 0.0873, 0.0, -2.0944, 0.0, 0.9599, -1.5708]),
+    "right_arm": np.array([0.0, -0.0873, 0.0, -2.0944, 0.0, 0.9599, 1.5708]),
+    "head": np.array([0.0, 0.6109]), 
+    "grippers": np.array([0.1, 0.1])
+}
+
+
 class RobotStateBuffer:
     """Stores the latest robot snapshot retrieved from the controller."""
     def __init__(self):
@@ -303,6 +313,7 @@ class RBY1WBC:
         self._state_thread.start()
         self._ik_thread.start()
         self._threads_started = True
+        self._set_init_position()
 
     def stop(self, join_timeout: float = 2.0) -> None:
         self._stop.set()
@@ -368,6 +379,46 @@ class RBY1WBC:
             raise RuntimeError("Controller did not report ready within 15 seconds")
         print("Realtime controller ready.")
         return controller
+
+    def _set_init_position(self) -> None:
+        print("Setting initial positions...")
+        sol_qpos = self.data.qpos.copy()
+
+        torso_indices = getattr(self.ik_solver, "torso_qpos_indices", [])
+        right_indices = getattr(self.ik_solver, "right_arm_qpos_indices", [])
+        left_indices = getattr(self.ik_solver, "left_arm_qpos_indices", [])
+        head_indices = getattr(self.ik_solver, "head_qpos_indices", [])
+
+        for idx, value in zip(torso_indices, INIT_POSITION["torso"]):
+            sol_qpos[int(idx)] = value
+        for idx, value in zip(right_indices, INIT_POSITION["right_arm"]):
+            sol_qpos[int(idx)] = value
+        for idx, value in zip(left_indices, INIT_POSITION["left_arm"]):
+            sol_qpos[int(idx)] = value
+        for idx, value in zip(head_indices, INIT_POSITION["head"]):
+            sol_qpos[int(idx)] = value
+
+        target_body = self._compute_body_commands(sol_qpos)
+        snapshot = self.wait_for_first_state()
+        with self._model_lock:
+            start_qpos = self._snapshot_to_qpos(snapshot)
+        start_body = self._compute_body_commands(start_qpos)
+
+        delta = target_body - start_body
+        max_delta = float(np.max(np.abs(delta)))
+        if max_delta < 1e-6:
+            self.controller.set_body_position_targets(target_body.tolist())
+        else:
+            INIT_POSITION_MAX_STEP_DELTA = 0.02
+            steps = max(10, int(np.ceil(max_delta / INIT_POSITION_MAX_STEP_DELTA)))
+            for step in range(1, steps + 1):
+                alpha = step / steps
+                cmd = start_body + alpha * delta
+                self.controller.set_body_position_targets(cmd.tolist())
+                self.ik_rate.sleep()
+            self.controller.set_body_position_targets(target_body.tolist())
+
+        print("Initial positions set.")
 
     def _state_poll_loop(self) -> None:
         while not self._stop.is_set():
