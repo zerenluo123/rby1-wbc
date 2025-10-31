@@ -456,13 +456,6 @@ def main() -> None:
     )    
     args = parser.parse_args()
 
-    # Initialize to the init pose
-    script_path = PROJECT_ROOT + "/scripts/rby1_move_initial.py"
-    cmd = [sys.executable, str(script_path), "--address", args.address, "--init-file", args.init_file]
-    result = subprocess.run(cmd, check=False)
-    if result.returncode != 0:
-        raise RuntimeError(f"Initial pose helper failed with exit code {result.returncode}")
-
     wbc = RBY1WBC(model_path=args.model, address=args.address, ik_frequency_hz=100.0, trajectory_frequency_hz=10.0, use_interpolation=True)
     wbc.start()
 
