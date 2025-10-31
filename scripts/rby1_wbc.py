@@ -30,6 +30,8 @@ from rby1.control import (
     RobotSnapshot,
 )
 
+from gripper.gripper import Gripper
+
 # TRI's IK runs at 500 hz and ours at 100 hz, so scale the gains by 5x
 BASE_ERROR_GAIN = np.array([0.2, 0.2, 0.2], dtype=float)
 # Might need to tune this more
@@ -161,13 +163,11 @@ class SharedTargets:
             # We don't want to linearly interpolate gripper width
             lt_p = _lerp_value(self.left_gripper_pos_start, self.left_gripper_pos, alpha)
             lt_q = _slerp_quaternion(self.left_gripper_quat_start, self.left_gripper_quat, alpha)
-            # lw = _lerp_value(self.left_gripper_width_start, self.left_gripper_width, alpha)
-            lw = self.left_gripper_width
+            lw = _lerp_value(self.left_gripper_width_start, self.left_gripper_width, alpha)
 
             rt_p = _lerp_value(self.right_gripper_pos_start, self.right_gripper_pos, alpha)
             rt_q = _slerp_quaternion(self.right_gripper_quat_start, self.right_gripper_quat, alpha)
-            # rw = _lerp_value(self.right_gripper_width_start, self.right_gripper_width, alpha)
-            rw = self.right_gripper_width
+            rw = _lerp_value(self.right_gripper_width_start, self.right_gripper_width, alpha)
 
             hp = _lerp_value(self.head_target_pos_start, self.head_target_pos, alpha)
             hq = _slerp_quaternion(self.head_target_quat_start, self.head_target_quat, alpha)
@@ -296,6 +296,11 @@ class RBY1WBC:
         self._build_joint_mapping()
         self._extract_base_origin()
 
+        self.gripper = Gripper()
+        if not self.gripper.initialize():
+            raise RuntimeError("Failed to initialize gripper")
+        self.gripper.start()
+        
         self._state_thread: Optional[threading.Thread] = None
         self._ik_thread: Optional[threading.Thread] = None
         self.use_interpolation = use_interpolation
@@ -418,6 +423,7 @@ class RBY1WBC:
                 self.ik_rate.sleep()
             self.controller.set_body_position_targets(target_body.tolist())
 
+        self.gripper.set_target(INIT_POSITION["grippers"])
         print("Initial positions set.")
 
     def _state_poll_loop(self) -> None:
@@ -452,7 +458,7 @@ class RBY1WBC:
                 print(f"[wbc] IK failed: {_info}")
 
             try:
-                # TODO: Add gripper commands
+                self.gripper.set_target([right_width, left_width])
                 body_targets = self._compute_body_commands(sol_qpos)
                 twist = self._compute_base_twist_command(sol_qpos, sol_vel, current_qpos)
                 self.controller.set_body_position_targets(body_targets.tolist())

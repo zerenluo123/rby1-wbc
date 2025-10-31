@@ -147,7 +147,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="RBY1 whole-body IK GUI decoupled from WBC thread")
     parser.add_argument(
         "--address",
-        default=os.environ.get("RBY1_ROBOT", "localhost:50051"),
+        default=os.environ.get("RBY1_ROBOT", "192.168.30.1:50051"),
         help="Robot gRPC address (default: env RBY1_ROBOT or localhost:50051)",
     )
     parser.add_argument(
