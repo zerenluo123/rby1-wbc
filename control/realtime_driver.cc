@@ -16,7 +16,6 @@ namespace rby1::control {
 
 using y1_instance = rb::y1_model::M;
 
-constexpr int64_t kCommandTimeoutUs = 100000;   // 100 ms
 constexpr double kControlPeriodSec = 0.002;     // 500 Hz
 constexpr double kWheelTrack = 0.49;            // m
 constexpr double kWheelBase = 0.49;             // m
@@ -70,10 +69,11 @@ class Rby1Component {
   };
 
   Rby1Component(std::string name, std::vector<int> dof,
-                double low_pass_freq_hz)
+                double low_pass_freq_hz, int64_t command_timeout_us)
       : name_(std::move(name)),
         dof_(std::move(dof)),
         low_pass_freq_hz_(low_pass_freq_hz),
+        command_timeout_us_(command_timeout_us),
         ready_(dof_.size(), false),
         position_(dof_.size(), 0.0),
         previous_command_(dof_.size(), 0.0) {}
@@ -145,8 +145,8 @@ class Rby1Component {
       return;
     }
 
-    if ((steady_now_us - last_command_time_) > kCommandTimeoutUs) {
-      // std::cerr << "Stopping commands for " << name_ << std::endl;
+    if ((steady_now_us - last_command_time_) > command_timeout_us_) {
+      std::cerr << "Stopping commands for " << name_ << std::endl;
       last_command_time_ = 0;
       command_.reset();
       for (size_t i = 0; i < dof_.size(); ++i) {
@@ -203,6 +203,7 @@ class Rby1Component {
   std::string name_;
   std::vector<int> dof_;
   double low_pass_freq_hz_;
+  int64_t command_timeout_us_;
 
   mutable std::mutex state_mutex_;
   std::vector<bool> ready_;
@@ -522,7 +523,7 @@ void RealtimeDriver::InitializeComponents() {
 void RealtimeDriver::AddComponent(const std::string& name,
                                   std::vector<int> dof) {
   auto component = std::make_unique<Rby1Component>(
-      name, std::move(dof), config_.low_pass_freq_hz);
+      name, std::move(dof), config_.low_pass_freq_hz, config_.command_timeout_us);
   state_->component_lookup[name] = component.get();
   state_->components.push_back(component.get());
   state_->component_storage.push_back(std::move(component));

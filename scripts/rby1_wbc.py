@@ -271,7 +271,8 @@ class RBY1WBC:
         ik_frequency_hz: float = 100.0,
         state_frequency_hz: float = 100.0,
         trajectory_frequency_hz: float = 10.0,
-        use_interpolation: bool = False
+        use_interpolation: bool = False,
+        command_timeout_sec: float = 1.0,
     ):
         self.model_path = model_path
         self.address = address
@@ -286,7 +287,7 @@ class RBY1WBC:
         self._threads_started = False
         self._model_lock = threading.Lock()
 
-        self.controller = self._init_controller(address)
+        self.controller = self._init_controller(address, command_timeout_sec)
 
         self.model = mujoco.MjModel.from_xml_path(model_path)
         self.data = mujoco.MjData(self.model)
@@ -369,9 +370,14 @@ class RBY1WBC:
         with self._model_lock:
             return self._snapshot_to_qpos(snapshot)
 
-    def _init_controller(self, address: str) -> RealtimeDriver:
+    def _init_controller(
+        self, address: str, command_timeout_sec: float
+    ) -> RealtimeDriver:
         config = ControllerConfig()
         config.robot_address = address
+        config.command_timeout_us = int(
+            round(max(command_timeout_sec, 0.0) * 1_000_000.0)
+        )
         controller = RealtimeDriver(config)
         controller.start()
         if not controller.wait_until_ready(timeout_sec=15.0):

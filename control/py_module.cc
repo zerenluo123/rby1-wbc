@@ -82,7 +82,9 @@ void BindConfig(py::module_& m) {
       .def_readwrite("low_pass_freq_hz",
                      &RealtimeDriver::Config::low_pass_freq_hz)
       .def_readwrite("expect_wheel_velocity",
-                     &RealtimeDriver::Config::expect_wheel_velocity);
+                     &RealtimeDriver::Config::expect_wheel_velocity)
+      .def_readwrite("command_timeout_us",
+                     &RealtimeDriver::Config::command_timeout_us);
 }
 
 void BindDriver(py::module_& m) {
