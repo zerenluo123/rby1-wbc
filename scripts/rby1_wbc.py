@@ -44,7 +44,7 @@ class RobotStateBuffer:
     def __init__(self):
         self._lock = threading.Lock()
         self.latest: Optional[RobotSnapshot] = None
-        self._gripper_widths: Tuple[float, float] = None, None
+        self._gripper_widths: Tuple[float, float] = (0.0, 0.0)
 
     def store(self, snapshot: RobotSnapshot) -> None:
         with self._lock:
@@ -509,7 +509,7 @@ class RBY1WBC:
             try:
                 if self.gripper and left_width is not None and right_width is not None:
                     self.gripper.set_target([right_width, left_width])
-                    self.robot_state.store_gripper_widths(left_width, right_width)
+                self.robot_state.store_gripper_widths(left_width, right_width)
                 body_targets = self._compute_body_commands(sol_qpos)
                 twist = self._compute_base_twist_command(sol_qpos, sol_vel, current_qpos)
                 self.controller.set_body_position_targets(body_targets.tolist())
@@ -591,6 +591,14 @@ class RBY1WBC:
             adr = mapping[idx]
             if adr is not None:
                 qpos[adr] = joint_positions[idx]
+
+        # Gripper joints handling
+        left_width, right_width = self.robot_state.load_gripper_widths()
+        mujoco_mapping = getattr(self, "_mj_joint_qadr", {})
+        l1_index, l2_index = mujoco_mapping["gripper_finger_l1"], mujoco_mapping["gripper_finger_l2"]
+        r1_index, r2_index = mujoco_mapping["gripper_finger_r1"], mujoco_mapping["gripper_finger_r2"]
+        qpos[l2_index], qpos[r2_index] = left_width/2, right_width/2
+        qpos[l1_index], qpos[r1_index] = -left_width/2, -right_width/2
         return qpos
 
     def _build_joint_mapping(self) -> None:
@@ -633,7 +641,7 @@ class RBY1WBC:
                 if name == "world_j":
                     self._base_free_adr = adr
                 continue
-            if jtype == mujoco.mjtJoint.mjJNT_HINGE:
+            elif jtype in [mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE]:
                 self._mj_joint_qadr[name] = adr
 
         if self._base_free_adr is None:
