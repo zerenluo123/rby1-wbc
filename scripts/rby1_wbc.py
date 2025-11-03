@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import threading
 import time
@@ -36,15 +37,6 @@ from gripper.gripper import Gripper
 BASE_ERROR_GAIN = np.array([0.2, 0.2, 0.2], dtype=float)
 # Might need to tune this more
 BASE_VELOCITY_GAIN = np.array([0.09, 0.09, 0.1], dtype=float)
-
-# Init Position
-INIT_POSITION={ 
-    "torso": np.array([0.0, 0.7854, -1.5708, 0.7854, 0.0, 0.0]), 
-    "left_arm": np.array([0.0, 0.0873, 0.0, -2.0944, 0.0, 0.9599, -1.5708]),
-    "right_arm": np.array([0.0, -0.0873, 0.0, -2.0944, 0.0, 0.9599, 1.5708]),
-    "head": np.array([0.0, 0.6109]), 
-    "grippers": np.array([0.1, 0.1])
-}
 
 
 class RobotStateBuffer:
@@ -270,13 +262,15 @@ class RBY1WBC:
         ik_frequency_hz: float = 100.0,
         state_frequency_hz: float = 100.0,
         trajectory_frequency_hz: float = 10.0,
-        use_interpolation: bool = False
+        use_interpolation: bool = False,
+        init_config_path: Optional[Union[str, Path]] = None,
     ):
         self.model_path = model_path
         self.address = address
         self.ik_rate = RateLimiter(frequency=ik_frequency_hz, warn=False)
         self.state_poll_rate = RateLimiter(frequency=state_frequency_hz, warn=False)
         self.trajectory_frequency_hz = trajectory_frequency_hz
+        self.init_config_path = Path(init_config_path).expanduser() if init_config_path else None
 
         self.shared_targets = SharedTargets()
         self.robot_state = RobotStateBuffer()
@@ -388,6 +382,32 @@ class RBY1WBC:
         return controller
 
     def _set_init_position(self) -> None:
+        if self.init_config_path is None:
+            print("Init config path not provided; skipping initial position command.")
+            return
+
+        try:
+            with self.init_config_path.open("r", encoding="utf-8") as file:
+                init_config = json.load(file)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"Failed to load init position config from {self.init_config_path}: {exc}")
+            return
+
+        def _to_array(values: Optional[list[float]]) -> Optional[np.ndarray]:
+            if values is None:
+                return None
+            return np.asarray(values, dtype=float)
+
+        torso_targets = _to_array(init_config.get("torso"))
+        right_targets = _to_array(init_config.get("right_arm"))
+        left_targets = _to_array(init_config.get("left_arm"))
+        head_targets = _to_array(init_config.get("head"))
+        gripper_targets = _to_array(init_config.get("grippers"))
+
+        if all(target is None for target in (torso_targets, right_targets, left_targets, head_targets, gripper_targets)):
+            print(f"Init config at {self.init_config_path} did not contain any targets; skipping initial position command.")
+            return
+
         print("Setting initial positions...")
         sol_qpos = self.data.qpos.copy()
 
@@ -396,14 +416,18 @@ class RBY1WBC:
         left_indices = getattr(self.ik_solver, "left_arm_qpos_indices", [])
         head_indices = getattr(self.ik_solver, "head_qpos_indices", [])
 
-        for idx, value in zip(torso_indices, INIT_POSITION["torso"]):
-            sol_qpos[int(idx)] = value
-        for idx, value in zip(right_indices, INIT_POSITION["right_arm"]):
-            sol_qpos[int(idx)] = value
-        for idx, value in zip(left_indices, INIT_POSITION["left_arm"]):
-            sol_qpos[int(idx)] = value
-        for idx, value in zip(head_indices, INIT_POSITION["head"]):
-            sol_qpos[int(idx)] = value
+        if torso_targets is not None:
+            for idx, value in zip(torso_indices, torso_targets):
+                sol_qpos[int(idx)] = float(value)
+        if right_targets is not None:
+            for idx, value in zip(right_indices, right_targets):
+                sol_qpos[int(idx)] = float(value)
+        if left_targets is not None:
+            for idx, value in zip(left_indices, left_targets):
+                sol_qpos[int(idx)] = float(value)
+        if head_targets is not None:
+            for idx, value in zip(head_indices, head_targets):
+                sol_qpos[int(idx)] = float(value)
 
         target_body = self._compute_body_commands(sol_qpos)
         snapshot = self.wait_for_first_state()
@@ -425,8 +449,8 @@ class RBY1WBC:
                 self.ik_rate.sleep()
             self.controller.set_body_position_targets(target_body.tolist())
 
-        if self.gripper:
-            self.gripper.set_target(INIT_POSITION["grippers"])
+        if self.gripper and gripper_targets is not None:
+            self.gripper.set_target(gripper_targets.tolist())
         print("Initial positions set.")
 
     def _state_poll_loop(self) -> None:

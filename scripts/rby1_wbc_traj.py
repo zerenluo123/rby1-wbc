@@ -456,7 +456,14 @@ def main() -> None:
     )    
     args = parser.parse_args()
 
-    wbc = RBY1WBC(model_path=args.model, address=args.address, ik_frequency_hz=100.0, trajectory_frequency_hz=10.0, use_interpolation=True)
+    wbc = RBY1WBC(
+        model_path=args.model,
+        address=args.address,
+        ik_frequency_hz=100.0,
+        trajectory_frequency_hz=10.0,
+        use_interpolation=True,
+        init_config_path=args.init_file,
+    )
     wbc.start()
 
     poses_list, widths_list = load_trajectory(traj_dir=args.trajectory, client=wbc, index=args.index, use_head=True, align_mode="relative")
