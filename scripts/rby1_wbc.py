@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import json
 import math
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from queue import SimpleQueue
-from typing import Optional, Tuple, Union
+from typing import Any, Mapping, Optional, Tuple, Union
 
 import mujoco
 import numpy as np
+import yaml
 
 from loop_rate_limiters import RateLimiter
 
@@ -20,8 +20,8 @@ from loop_rate_limiters import RateLimiter
 import sys
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from ik.rby1_whole_body_ik import RBY1WholeBodyIK
 
@@ -37,7 +37,6 @@ from gripper.gripper import Gripper
 BASE_ERROR_GAIN = np.array([0.2, 0.2, 0.2], dtype=float)
 # Might need to tune this more
 BASE_VELOCITY_GAIN = np.array([0.09, 0.09, 0.1], dtype=float)
-
 
 class RobotStateBuffer:
     """Stores the latest robot snapshot retrieved from the controller."""
@@ -273,24 +272,27 @@ def _slerp_quaternion(
 class RBY1WBC:
     """Worker that streams IK solutions to the realtime controller."""
 
-    def __init__(
-        self,
-        model_path: str,
-        address: str = "localhost:50051",
-        ik_frequency_hz: float = 100.0,
-        state_frequency_hz: float = 100.0,
-        trajectory_frequency_hz: float = 10.0,
-        use_interpolation: bool = False,
-        init_config_path: Optional[Union[str, Path]] = None,,
-        command_timeout_sec: float = 1.0,
-        init_config_path: Optional[Union[str, Path]] = None,
-    ):
-        self.model_path = model_path
-        self.address = address
-        self.ik_rate = RateLimiter(frequency=ik_frequency_hz, warn=False)
-        self.state_poll_rate = RateLimiter(frequency=state_frequency_hz, warn=False)
-        self.trajectory_frequency_hz = trajectory_frequency_hz
-        self.init_config_path = Path(init_config_path).expanduser() if init_config_path else None
+    def __init__(self, config_path: str = PROJECT_ROOT + "/config/wbc.yaml"):
+        # Load Controller Config
+        try:
+            config_path = Path(config_path)
+            with config_path.open("r", encoding="utf-8") as f:
+                self.config = yaml.safe_load(f) 
+        except Exception as e:
+            raise Exception(f"Exception while loading config file: {e}")
+        
+        self.address = self.config["address"]
+        self.model_path = PROJECT_ROOT + self.config["model_path"]
+        self.init_position = self.config["init_position"]
+        self.state_frequency_hz = self.config["state_frequency_hz"]
+        self.trajectory_frequency_hz = self.config["trajectory_frequency_hz"]
+        self.ik_frequency_hz = self.config["ik_frequency_hz"]
+        self.use_interpolation = self.config["use_interpolation"]
+        self.command_timeout_sec = self.config["command_timeout_sec"]
+
+        # Initialize Controller loops
+        self.ik_rate = RateLimiter(frequency=self.ik_frequency_hz, warn=False)
+        self.state_poll_rate = RateLimiter(frequency=self.state_frequency_hz, warn=False)
 
         self.shared_targets = SharedTargets()
         self.robot_state = RobotStateBuffer()
@@ -299,9 +301,9 @@ class RBY1WBC:
         self._threads_started = False
         self._model_lock = threading.Lock()
 
-        self.controller = self._init_controller(address, command_timeout_sec)
+        self.controller = self._init_controller(self.address, self.command_timeout_sec)
 
-        self.model = mujoco.MjModel.from_xml_path(model_path)
+        self.model = mujoco.MjModel.from_xml_path(self.model_path)
         self.data = mujoco.MjData(self.model)
         mujoco.mj_forward(self.model, self.data)
 
@@ -309,6 +311,7 @@ class RBY1WBC:
         self._build_joint_mapping()
         self._extract_base_origin()
 
+        # Initialize Gripper
         self.gripper = Gripper()
         if self.gripper.initialize():
             self.gripper.start()
@@ -319,7 +322,6 @@ class RBY1WBC:
         
         self._state_thread: Optional[threading.Thread] = None
         self._ik_thread: Optional[threading.Thread] = None
-        self.use_interpolation = use_interpolation
 
     def start(self) -> None:
         if self._threads_started:
@@ -410,53 +412,16 @@ class RBY1WBC:
         return controller
 
     def _set_init_position(self) -> None:
-        if self.init_config_path is None:
-            print("Init config path not provided; skipping initial position command.")
-            return
-
-        try:
-            with self.init_config_path.open("r", encoding="utf-8") as file:
-                init_config = json.load(file)
-        except (OSError, json.JSONDecodeError) as exc:
-            print(f"Failed to load init position config from {self.init_config_path}: {exc}")
-            return
-
         def _to_array(values: Optional[list[float]]) -> Optional[np.ndarray]:
             if values is None:
                 return None
             return np.asarray(values, dtype=float)
 
-        torso_targets = _to_array(init_config.get("torso"))
-        right_targets = _to_array(init_config.get("right_arm"))
-        left_targets = _to_array(init_config.get("left_arm"))
-        head_targets = _to_array(init_config.get("head"))
-        gripper_targets = _to_array(init_config.get("grippers"))
-
-        if all(target is None for target in (torso_targets, right_targets, left_targets, head_targets, gripper_targets)):
-            print(f"Init config at {self.init_config_path} did not contain any targets; skipping initial position command.")
-            return
-
-        if self.init_config_path is None:
-            print("Init config path not provided; skipping initial position command.")
-            return
-
-        try:
-            with self.init_config_path.open("r", encoding="utf-8") as file:
-                init_config = json.load(file)
-        except (OSError, json.JSONDecodeError) as exc:
-            print(f"Failed to load init position config from {self.init_config_path}: {exc}")
-            return
-
-        def _to_array(values: Optional[list[float]]) -> Optional[np.ndarray]:
-            if values is None:
-                return None
-            return np.asarray(values, dtype=float)
-
-        torso_targets = _to_array(init_config.get("torso"))
-        right_targets = _to_array(init_config.get("right_arm"))
-        left_targets = _to_array(init_config.get("left_arm"))
-        head_targets = _to_array(init_config.get("head"))
-        gripper_targets = _to_array(init_config.get("grippers"))
+        torso_targets = _to_array(self.init_position.get("torso"))
+        right_targets = _to_array(self.init_position.get("right_arm"))
+        left_targets = _to_array(self.init_position.get("left_arm"))
+        head_targets = _to_array(self.init_position.get("head"))
+        gripper_targets = _to_array(self.init_position.get("grippers"))
 
         if all(target is None for target in (torso_targets, right_targets, left_targets, head_targets, gripper_targets)):
             print(f"Init config at {self.init_config_path} did not contain any targets; skipping initial position command.")

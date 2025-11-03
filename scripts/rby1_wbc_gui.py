@@ -22,12 +22,11 @@ from scripts.rby1_wbc import RBY1WBC
 
 
 class RBY1WBCGui:
-    def __init__(self, model_path: str, wbc: RBY1WBC, headless: bool = False):
-        self.model_path = model_path
+    def __init__(self, wbc: RBY1WBC):
         self.wbc = wbc
-        self.headless = headless
+        self.model_path = PROJECT_ROOT + "/model/rby1/rby1_mocap.xml"
 
-        self.viewer = None if headless else self._init_viewer(model_path)
+        self.viewer = self._init_viewer(self.model_path)
         self.viewer_rate = RateLimiter(frequency=60.0, warn=False)
 
     def _init_viewer(self, model_path: str):
@@ -122,18 +121,11 @@ class RBY1WBCGui:
         self.viewer_rate.sleep()
 
     def run(self) -> None:
-        if self.headless:
-            try:
-                while True:
-                    time.sleep(0.1)
-            except KeyboardInterrupt:
-                return
-        else:
-            try:
-                while self.viewer.is_running():
-                    self.visualize_loop()
-            except KeyboardInterrupt:
-                pass
+        try:
+            while self.viewer.is_running():
+                self.visualize_loop()
+        except KeyboardInterrupt:
+            pass
 
     def close(self) -> None:
         if self.viewer is not None:
@@ -145,32 +137,14 @@ class RBY1WBCGui:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="RBY1 whole-body IK GUI decoupled from WBC thread")
-    parser.add_argument(
-        "--address",
-        default=os.environ.get("RBY1_ROBOT", "192.168.30.1:50051"),
-        help="Robot gRPC address (default: env RBY1_ROBOT or localhost:50051)",
-    )
-    parser.add_argument(
-        "--model",
-        default=PROJECT_ROOT + "/model/rby1/rby1_mocap.xml",
-        help="Path to the MuJoCo model to visualize",
-    )
-    parser.add_argument(
-        "--headless",
-        action="store_true",
-        help="Skip launching the MuJoCo viewer (useful for debugging controller only).",
-    )
     args = parser.parse_args()
 
-    if args.headless:
-        os.environ.setdefault("MUJOCO_GL", "egl")
-
-    wbc = RBY1WBC(model_path=args.model, address=args.address, ik_frequency_hz=100.0, use_interpolation=False)
+    wbc = RBY1WBC()
     wbc.start()
 
     gui = None
     try:
-        gui = RBY1WBCGui(model_path=args.model, wbc=wbc, headless=args.headless)
+        gui = RBY1WBCGui(wbc=wbc)
         gui.run()
     finally:
         if gui is not None:

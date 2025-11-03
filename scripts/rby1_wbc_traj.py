@@ -43,12 +43,13 @@ def _quat_angle_error(target_quat: np.ndarray, actual_quat: np.ndarray) -> float
 
 
 class RBY1WBCTrajectory:
-    def __init__(self, model_path: str, wbc: RBY1WBC, headless: bool = False, trajectory_frequency_hz: float = 10.0, poses_list: list[dict] | None = None, widths_list: list[dict] | None = None) -> None:
-        self.model_path = model_path
+    def __init__(self, wbc: RBY1WBC, headless: bool = False, poses_list: list[dict] | None = None, widths_list: list[dict] | None = None) -> None:
         self.wbc = wbc
+        self.model_path = self.wbc.model_path
+        self.trajectory_frequency_hz = self.wbc.trajectory_frequency_hz
         self.headless = headless
 
-        self.model = mujoco.MjModel.from_xml_path(model_path)
+        self.model = mujoco.MjModel.from_xml_path(self.model_path)
         self.data = mujoco.MjData(self.model)
         mujoco.mj_forward(self.model, self.data)
         
@@ -70,7 +71,7 @@ class RBY1WBCTrajectory:
         # Trajectory Streamer Setup
         self.poses_list = poses_list if poses_list is not None else []
         self.widths_list = widths_list if widths_list is not None else []
-        self.trajectory_rate = RateLimiter(frequency=trajectory_frequency_hz, warn=False)
+        self.trajectory_rate = RateLimiter(frequency=self.trajectory_frequency_hz, warn=False)
         self.trajectory_index = 0
 
         self._left_ee_site_id = self.model.site("end_effector_l").id
@@ -424,16 +425,6 @@ class RBY1WBCTrajectory:
 def main() -> None:
     parser = argparse.ArgumentParser(description="RBY1 whole-body IK GUI decoupled from WBC thread")
     parser.add_argument(
-        "--address",
-        default=os.environ.get("RBY1_ROBOT", "192.168.30.1:50051"),
-        help="Robot gRPC address (default: env RBY1_ROBOT or localhost:50051)",
-    )
-    parser.add_argument(
-        "--model",
-        default=PROJECT_ROOT + "/model/rby1/rby1.xml",
-        help="Path to the MuJoCo model to visualize",
-    )
-    parser.add_argument(
         "--trajectory",
         default=PROJECT_ROOT + "/demo/dataset_plan.pkl",
         help="Path to a pickle file containing trajectory episodes",
@@ -449,21 +440,9 @@ def main() -> None:
         action="store_true",
         help="Skip launching the MuJoCo viewer (useful for debugging controller only).",
     )
-    parser.add_argument(
-        "--init-file",
-        default=PROJECT_ROOT + "/demo/init_position.json",
-        help="JSON file describing initial joint targets for move_initial subprocess.",
-    )    
     args = parser.parse_args()
 
-    wbc = RBY1WBC(
-        model_path=args.model,
-        address=args.address,
-        ik_frequency_hz=100.0,
-        trajectory_frequency_hz=10.0,
-        use_interpolation=True,
-        init_config_path=args.init_file,
-    )
+    wbc = RBY1WBC()
     wbc.start()
 
     poses_list, widths_list = load_trajectory(traj_dir=args.trajectory, client=wbc, index=args.index, use_head=True, align_mode="relative")
@@ -471,7 +450,7 @@ def main() -> None:
         os.environ.setdefault("MUJOCO_GL", "egl")
     gui = None
     try:
-        gui = RBY1WBCTrajectory(model_path=args.model, wbc=wbc, headless=args.headless, trajectory_frequency_hz=10.0, poses_list=poses_list, widths_list=widths_list)
+        gui = RBY1WBCTrajectory(wbc=wbc, headless=args.headless, poses_list=poses_list, widths_list=widths_list)
         gui.run()
     finally:
         if gui is not None:
