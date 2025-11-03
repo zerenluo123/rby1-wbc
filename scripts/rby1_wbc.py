@@ -160,7 +160,6 @@ class SharedTargets:
             elapsed = max(0.0, current_time - self.target_set_timestamp)
             alpha = min(1.0, elapsed / duration)
 
-            # We don't want to linearly interpolate gripper width
             lt_p = _lerp_value(self.left_gripper_pos_start, self.left_gripper_pos, alpha)
             lt_q = _slerp_quaternion(self.left_gripper_quat_start, self.left_gripper_quat, alpha)
             lw = _lerp_value(self.left_gripper_width_start, self.left_gripper_width, alpha)
@@ -297,9 +296,12 @@ class RBY1WBC:
         self._extract_base_origin()
 
         self.gripper = Gripper()
-        if not self.gripper.initialize():
-            raise RuntimeError("Failed to initialize gripper")
-        self.gripper.start()
+        if self.gripper.initialize():
+            self.gripper.start()
+            print("Successfully initialized gripper")
+        else:
+            self.gripper = None
+            print("Failed to initialize gripper")
         
         self._state_thread: Optional[threading.Thread] = None
         self._ik_thread: Optional[threading.Thread] = None
@@ -423,7 +425,8 @@ class RBY1WBC:
                 self.ik_rate.sleep()
             self.controller.set_body_position_targets(target_body.tolist())
 
-        self.gripper.set_target(INIT_POSITION["grippers"])
+        if self.gripper:
+            self.gripper.set_target(INIT_POSITION["grippers"])
         print("Initial positions set.")
 
     def _state_poll_loop(self) -> None:
@@ -458,7 +461,8 @@ class RBY1WBC:
                 print(f"[wbc] IK failed: {_info}")
 
             try:
-                self.gripper.set_target([right_width, left_width])
+                if self.gripper:
+                    self.gripper.set_target([right_width, left_width])
                 body_targets = self._compute_body_commands(sol_qpos)
                 twist = self._compute_base_twist_command(sol_qpos, sol_vel, current_qpos)
                 self.controller.set_body_position_targets(body_targets.tolist())
