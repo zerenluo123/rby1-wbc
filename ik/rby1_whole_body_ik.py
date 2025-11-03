@@ -422,102 +422,13 @@ class RBY1WholeBodyIK:
                 count = min(solution_vel.shape[0], self.model.nv)
                 padded[:count] = solution_vel[:count]
                 solution_vel = padded
-
-        # Final error check
-        final_errors = {}
-        if left_target_pos is not None:
-            current_left_pos = self._get_site_position(self.left_ee_name, solution_qpos)
-            final_errors["left_position_error"] = np.linalg.norm(current_left_pos - left_target_pos)
-        if right_target_pos is not None:
-            current_right_pos = self._get_site_position(self.right_ee_name, solution_qpos)
-            final_errors["right_position_error"] = np.linalg.norm(current_right_pos - right_target_pos)
-        if head_pos_specified and head_target_pos_used is not None:
-            current_head_pos = self._get_site_position(self.head_name, solution_qpos)
-            final_errors["head_position_error"] = np.linalg.norm(
-                current_head_pos - head_target_pos_used
-            )
-        if head_quat_specified and head_target_quat_used is not None:
-            _, current_head_quat = self._get_site_pose(self.head_name, solution_qpos)
-            final_errors["head_orientation_error"] = self._quat_distance(
-                current_head_quat, head_target_quat_used
-            )
-        
-        # Check stability (COM within support polygon)
-        torso5_pos = self._get_body_position(self.torso5_name, solution_qpos)
-        base_pos = solution_qpos[:3]
-        relative_pos = torso5_pos - base_pos
-        stability_margin = np.linalg.norm(relative_pos[:2])  # XY distance from base center
         
         info = {
-            "errors": final_errors,
-            "iterations": 0,
             "success": success,
             "base_position": solution_qpos[:3].copy(),
-            "stability_margin": stability_margin,
         }
         
         return solution_qpos, solution_vel, success, info
-    
-    def _get_site_position(self, site_name: str, qpos: np.ndarray) -> np.ndarray:
-        """Get site position for given joint configuration."""
-        pos, _ = self._get_site_pose(site_name, qpos)
-        return pos
-
-    def _get_site_pose(
-        self, site_name: str, qpos: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Get site position and orientation for given joint configuration.
-
-        Returns:
-            Position (3,) and quaternion (4,) in world frame.
-        """
-        old_qpos = self.data.qpos.copy()
-        self.data.qpos[:] = qpos
-        mujoco.mj_forward(self.model, self.data)
-        
-        site_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, site_name)
-        pos = self.data.site_xpos[site_id].copy()
-        quat = np.zeros(4)
-        mujoco.mju_mat2Quat(quat, self.data.site_xmat[site_id])
-        
-        # Restore original qpos
-        self.data.qpos[:] = old_qpos
-        mujoco.mj_forward(self.model, self.data)
-        
-        return pos, quat
-
-    def _quat_distance(self, q1: np.ndarray, q2: np.ndarray) -> float:
-        """Compute the angular distance between two quaternions."""
-        q1 = np.array(q1, dtype=float)
-        q2 = np.array(q2, dtype=float)
-        q1 /= np.linalg.norm(q1)
-        q2 /= np.linalg.norm(q2)
-        dot = np.clip(np.abs(np.dot(q1, q2)), 0.0, 1.0)
-        return float(2.0 * np.arccos(dot))
-    
-    def _get_body_position(self, body_name: str, qpos: np.ndarray) -> np.ndarray:
-        """Get body position for given joint configuration.
-        
-        Args:
-            body_name: Name of the body
-            qpos: Joint positions
-            
-        Returns:
-            3D position of the body
-        """
-        # Temporarily set qpos and compute forward kinematics
-        old_qpos = self.data.qpos.copy()
-        self.data.qpos[:] = qpos
-        mujoco.mj_forward(self.model, self.data)
-        
-        body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body_name)
-        pos = self.data.xpos[body_id].copy()
-        
-        # Restore original qpos
-        self.data.qpos[:] = old_qpos
-        mujoco.mj_forward(self.model, self.data)
-        
-        return pos
     
     def _pose_to_matrix(self, position: np.ndarray, quaternion: np.ndarray) -> np.ndarray:
         """Convert position and quaternion to 4x4 transformation matrix.
