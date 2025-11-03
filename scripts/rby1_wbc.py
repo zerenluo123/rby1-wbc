@@ -283,6 +283,7 @@ class RBY1WBC:
         use_interpolation: bool = False,
         init_config_path: Optional[Union[str, Path]] = None,,
         command_timeout_sec: float = 1.0,
+        init_config_path: Optional[Union[str, Path]] = None,
     ):
         self.model_path = model_path
         self.address = address
@@ -409,6 +410,32 @@ class RBY1WBC:
         return controller
 
     def _set_init_position(self) -> None:
+        if self.init_config_path is None:
+            print("Init config path not provided; skipping initial position command.")
+            return
+
+        try:
+            with self.init_config_path.open("r", encoding="utf-8") as file:
+                init_config = json.load(file)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"Failed to load init position config from {self.init_config_path}: {exc}")
+            return
+
+        def _to_array(values: Optional[list[float]]) -> Optional[np.ndarray]:
+            if values is None:
+                return None
+            return np.asarray(values, dtype=float)
+
+        torso_targets = _to_array(init_config.get("torso"))
+        right_targets = _to_array(init_config.get("right_arm"))
+        left_targets = _to_array(init_config.get("left_arm"))
+        head_targets = _to_array(init_config.get("head"))
+        gripper_targets = _to_array(init_config.get("grippers"))
+
+        if all(target is None for target in (torso_targets, right_targets, left_targets, head_targets, gripper_targets)):
+            print(f"Init config at {self.init_config_path} did not contain any targets; skipping initial position command.")
+            return
+
         if self.init_config_path is None:
             print("Init config path not provided; skipping initial position command.")
             return
