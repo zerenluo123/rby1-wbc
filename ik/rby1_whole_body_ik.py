@@ -657,16 +657,16 @@ class RBY1WholeBodyIK:
         right_arm_group = right_arm_0_group | right_arm_1_group | right_arm_2_group | right_arm_3_group | right_arm_4_group | right_arm_5_group | right_arm_6_group | right_arm_7_group | right_ee_group
 
         # Environment collision group - all robot collision geoms
-        robot_collision_group = base_torso_group | left_arm_group | right_arm_group
+        # robot_collision_group = base_torso_group | left_arm_group | right_arm_group
 
         # Get environment collision geoms (non-robot geoms)
-        environment_geom_group = self._get_environment_geoms()
+        # environment_geom_group = self._get_environment_geoms()
 
         geom_pairs = [
             (base_torso_group, left_arm_group),
             (base_torso_group, right_arm_group),
             (left_arm_group, right_arm_group),
-            (robot_collision_group, environment_geom_group),
+            # (robot_collision_group, environment_geom_group),
         ]
 
         collision_avoidance_limit = mink.CollisionAvoidanceLimit(
