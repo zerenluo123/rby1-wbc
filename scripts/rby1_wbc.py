@@ -44,6 +44,7 @@ class RobotStateBuffer:
     def __init__(self):
         self._lock = threading.Lock()
         self.latest: Optional[RobotSnapshot] = None
+        self._gripper_widths: Tuple[float, float] = None, None
 
     def store(self, snapshot: RobotSnapshot) -> None:
         with self._lock:
@@ -52,6 +53,23 @@ class RobotStateBuffer:
     def load(self) -> Optional[RobotSnapshot]:
         with self._lock:
             return self.latest
+
+    def store_gripper_widths(
+        self,
+        left_width: Optional[float],
+        right_width: Optional[float],
+    ) -> None:
+        with self._lock:
+            current_left, current_right = self._gripper_widths
+            if left_width is not None:
+                current_left = float(left_width)
+            if right_width is not None:
+                current_right = float(right_width)
+            self._gripper_widths = (current_left, current_right)
+
+    def load_gripper_widths(self) -> Tuple[float, float]:
+        with self._lock:
+            return self._gripper_widths
 
 
 @dataclass
@@ -354,6 +372,9 @@ class RBY1WBC:
     def get_latest_robot_state(self) -> Optional[RobotSnapshot]:
         return self.robot_state.load()
 
+    def get_latest_gripper_widths(self) -> Tuple[float, float]:
+        return self.robot_state.load_gripper_widths()
+
     def wait_for_first_state(self, timeout_sec: float = 5.0) -> Optional[RobotSnapshot]:
         deadline = time.monotonic() + timeout_sec
         snapshot = None
@@ -451,6 +472,7 @@ class RBY1WBC:
 
         if self.gripper and gripper_targets is not None:
             self.gripper.set_target(gripper_targets.tolist())
+        self.robot_state.store_gripper_widths(float(gripper_targets[0]),  float(gripper_targets[1]))
         print("Initial positions set.")
 
     def _state_poll_loop(self) -> None:
@@ -485,8 +507,9 @@ class RBY1WBC:
                 print(f"[wbc] IK failed: {_info}")
 
             try:
-                if self.gripper:
+                if self.gripper and left_width is not None and right_width is not None:
                     self.gripper.set_target([right_width, left_width])
+                    self.robot_state.store_gripper_widths(left_width, right_width)
                 body_targets = self._compute_body_commands(sol_qpos)
                 twist = self._compute_base_twist_command(sol_qpos, sol_vel, current_qpos)
                 self.controller.set_body_position_targets(body_targets.tolist())
