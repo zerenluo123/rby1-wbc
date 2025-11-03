@@ -46,7 +46,7 @@ NOMINAL_LEFT_ARM_RAD = np.array([0.0,
 NOMINAL_HEAD_RAD = np.array([0.0, 0.6109])
 
 SAFETY_DISTANCE = 0.01         # m, keep at least this clearance
-INFLUENCE_DISTANCE = 0.05      # m, start repulsion here
+INFLUENCE_DISTANCE = 0.02      # m, start repulsion here
 BASE_XY_V_LIMIT = 1 # 1 m/s
 BASE_RZ_V_LIMIT = 1 # 1 rad/s
 
