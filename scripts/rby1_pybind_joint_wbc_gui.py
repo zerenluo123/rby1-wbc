@@ -95,9 +95,15 @@ class SharedTargets:
 
 
 class PybindSimGUI:
-    def __init__(self, model_path: str, address: str = "localhost:50051", headless: bool = False):
+    def __init__(
+        self,
+        model_path: str,
+        address: str = "localhost:50051",
+        headless: bool = False,
+        command_timeout_sec: float = 1.0,
+    ):
         self.headless = headless
-        self.controller = self._init_controller(address)
+        self.controller = self._init_controller(address, command_timeout_sec)
 
         # Robot state buffer populated from the controller thread.
         self.robot_state = RobotStateBuffer()
@@ -147,9 +153,14 @@ class PybindSimGUI:
         )
         self._state_thread.start()
 
-    def _init_controller(self, address: str) -> RealtimeDriver:
+    def _init_controller(
+        self, address: str, command_timeout_sec: float = 1.0
+    ) -> RealtimeDriver:
         config = ControllerConfig()
         config.robot_address = address
+        config.command_timeout_us = int(
+            round(max(command_timeout_sec, 0.0) * 1_000_000.0)
+        )
         controller = RealtimeDriver(config)
         controller.start()
         if not controller.wait_until_ready(timeout_sec=15.0):

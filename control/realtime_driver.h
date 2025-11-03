@@ -42,6 +42,7 @@ class RealtimeDriver {
     std::string robot_address{"192.168.30.1:50051"};
     double low_pass_freq_hz{1.0};
     bool expect_wheel_velocity{false};
+    int64_t command_timeout_us{1000000};
   };
 
   RealtimeDriver();
