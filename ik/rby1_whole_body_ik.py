@@ -165,13 +165,6 @@ class RBY1WholeBodyIK:
             "link_wheel_rl",
         ]
 
-        self.environment_geoms = None
-        # Limits cache (built once and reused to avoid per-iteration overhead)
-        self._cached_limits = None
-        self._cached_tasks = None
-        self._build_limits_cache()
-        self._build_tasks_cache()
-
         self.nominal_torso_angles = NOMINAL_TORSO_RAD.copy()
         self.nominal_right_arm_angles = NOMINAL_RIGHT_ARM_RAD.copy()
         self.nominal_left_arm_angles = NOMINAL_LEFT_ARM_RAD.copy()
@@ -183,6 +176,15 @@ class RBY1WholeBodyIK:
         self.posture_cost_vector = np.full(self.model.nv, POSTURE_COST_MAIN, dtype=float)
         for dof_idx in self.head_dof_indices:
             self.posture_cost_vector[dof_idx] = POSTURE_COST_HEAD 
+
+        self.environment_geoms = None
+        # Limits cache (built once and reused to avoid per-iteration overhead)
+        self._cached_limits = None
+        self._cached_tasks = None
+        self.configuration = mink.Configuration(self.model, self.data.qpos.copy())
+        self._build_limits_cache()
+        self._build_tasks_cache()
+        self._build_reusable_tasks()
     
     def _setup_joint_indices(self):
         """Setup joint indices for different robot parts."""
@@ -304,8 +306,9 @@ class RBY1WholeBodyIK:
         self.data.qpos[:] = current_qpos
         mujoco.mj_forward(self.model, self.data)
         
-        # Create configuration from current state
-        configuration = mink.Configuration(self.model, current_qpos.copy())
+        # Reuse the persistent Mink configuration
+        configuration = self.configuration
+        configuration.update(q=current_qpos)
         
         # Create task and limit list
         tasks = []
@@ -313,36 +316,30 @@ class RBY1WholeBodyIK:
         
         # End-effector tasks (highest priority)
         if left_target_pos is not None:
-            left_ee_task = mink.FrameTask(
-                frame_name=self.left_ee_name,
-                frame_type="site",
-                position_cost=EE_POS_COST,  # Highest priority
-                orientation_cost=EE_ORI_COST if left_target_quat is not None else 0.0,
-                lm_damping=1e-5,
-            )
-            
+            left_ee_task = self._left_ee_task
+            left_ee_task.set_position_cost(EE_POS_COST)
             if left_target_quat is not None:
-                target_matrix = self._pose_to_matrix(left_target_pos, left_target_quat)
+                left_ee_task.set_orientation_cost(EE_ORI_COST)
+                target_quat = left_target_quat
             else:
-                target_matrix = self._pose_to_matrix(left_target_pos, np.array([1, 0, 0, 0]))
-            
+                left_ee_task.set_orientation_cost(0.0)
+                target_quat = np.array([1, 0, 0, 0])
+
+            target_matrix = self._pose_to_matrix(left_target_pos, target_quat)
             left_ee_task.set_target(mink.SE3.from_matrix(target_matrix))
             tasks.append(left_ee_task)
         
         if right_target_pos is not None:
-            right_ee_task = mink.FrameTask(
-                frame_name=self.right_ee_name,
-                frame_type="site",
-                position_cost=EE_POS_COST,  # Highest priority
-                orientation_cost=EE_ORI_COST if right_target_quat is not None else 0.0,
-                lm_damping=1e-5,
-            )
-            
+            right_ee_task = self._right_ee_task
+            right_ee_task.set_position_cost(EE_POS_COST)
             if right_target_quat is not None:
-                target_matrix = self._pose_to_matrix(right_target_pos, right_target_quat)
+                right_ee_task.set_orientation_cost(EE_ORI_COST)
+                target_quat = right_target_quat
             else:
-                target_matrix = self._pose_to_matrix(right_target_pos, np.array([1, 0, 0, 0]))
-            
+                right_ee_task.set_orientation_cost(0.0)
+                target_quat = np.array([1, 0, 0, 0])
+
+            target_matrix = self._pose_to_matrix(right_target_pos, target_quat)
             right_ee_task.set_target(mink.SE3.from_matrix(target_matrix))
             tasks.append(right_ee_task)
 
@@ -352,13 +349,9 @@ class RBY1WholeBodyIK:
         head_target_quat_used = None
 
         if head_pos_specified or head_quat_specified:
-            head_task = mink.FrameTask(
-                frame_name=self.head_name,
-                frame_type="site",
-                position_cost=HEAD_POS_COST if head_pos_specified else 0.0,
-                orientation_cost=HEAD_ORI_COST if head_quat_specified else 0.0,
-                lm_damping=1e-5,
-            )
+            head_task = self._head_task
+            head_task.set_position_cost(HEAD_POS_COST if head_pos_specified else 0.0)
+            head_task.set_orientation_cost(HEAD_ORI_COST if head_quat_specified else 0.0)
             current_head_pos = self.data.site_xpos[self.head_site_id].copy()
             current_head_quat = np.zeros(4)
             mujoco.mju_mat2Quat(current_head_quat, self.data.site_xmat[self.head_site_id])
@@ -373,13 +366,7 @@ class RBY1WholeBodyIK:
         
         # Base ground constraint (very high priority - base must stay on ground)
         # Constrain base Z position to 0 and only allow yaw rotation
-        base_ground_task = mink.FrameTask(
-            frame_name=self.base_name,
-            frame_type="body",
-            position_cost=[0., 0., 100000.0],  # Allow X,Y movement, strongly constrain Z
-            orientation_cost=[100000.0, 100000.0, 0.],  # Constrain roll/pitch, allow yaw
-            lm_damping=1e-6,
-        )
+        base_ground_task = self._base_ground_task
         # Set target to current X,Y but Z=0 and upright orientation with current yaw
         base_target_matrix = np.eye(4)
         base_target_matrix[0, 3] = current_qpos[0]  # Current X
@@ -401,10 +388,7 @@ class RBY1WholeBodyIK:
         tasks.append(base_ground_task)
         
         # Main posture task
-        posture_task = mink.PostureTask(
-            model=self.model,
-            cost=self.posture_cost_vector
-        )
+        posture_task = self._posture_task
         # Set reference posture
         reference_qpos = self._get_nominal_posture(current_qpos)
         posture_task.set_target(reference_qpos)
@@ -746,4 +730,39 @@ class RBY1WholeBodyIK:
             torso_upright_task,
             com_stability_task,
         ]
+        
+    def _build_reusable_tasks(self) -> None:
+        """Create task objects that are re-targeted each solve."""
+        self._left_ee_task = mink.FrameTask(
+            frame_name=self.left_ee_name,
+            frame_type="site",
+            position_cost=EE_POS_COST,
+            orientation_cost=EE_ORI_COST,
+            lm_damping=1e-5,
+        )
+        self._right_ee_task = mink.FrameTask(
+            frame_name=self.right_ee_name,
+            frame_type="site",
+            position_cost=EE_POS_COST,
+            orientation_cost=EE_ORI_COST,
+            lm_damping=1e-5,
+        )
+        self._head_task = mink.FrameTask(
+            frame_name=self.head_name,
+            frame_type="site",
+            position_cost=0.0,
+            orientation_cost=0.0,
+            lm_damping=1e-5,
+        )
+        self._base_ground_task = mink.FrameTask(
+            frame_name=self.base_name,
+            frame_type="body",
+            position_cost=[0.0, 0.0, 100000.0],
+            orientation_cost=[100000.0, 100000.0, 0.0],
+            lm_damping=1e-6,
+        )
+        self._posture_task = mink.PostureTask(
+            model=self.model,
+            cost=self.posture_cost_vector,
+        )
         
