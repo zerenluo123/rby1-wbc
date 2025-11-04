@@ -321,7 +321,10 @@
     <mesh name="PAN_TILT_3_0" file="././assets/PAN_TILT_3/PAN_TILT_3_0.obj"/>
     <mesh name="PAN_TILT_3_1" file="././assets/PAN_TILT_3/PAN_TILT_3_1.obj"/>
 
-    <include file="./assets/FINRAY_FINGER/assets.xml" />
+    <texture type="2d" name="finray_finger_texture" file="././assets/FINRAY_FINGER/one_piece_wide_grasp_finray_finger_color.png"/>
+    <material name="finray_finger_material" texture="finray_finger_texture" specular="0.5" shininess="0.0"/>
+    <mesh name="finray_finger_visual" file="././assets/FINRAY_FINGER/one_piece_wide_grasp_finray_finger.obj" scale="1.0 1.0 1.0"/>
+    <mesh name="finray_finger_collider" file="././assets/FINRAY_FINGER/finray_collider.obj" scale="1.0 1.0 1.0"/>
   </asset>
   <worldbody>
     <geom name="floor" pos="0 0 0" size="0 0 0.05" type="plane" material="plane" condim="1"
@@ -514,13 +517,13 @@
                                 </body>
                                 <body name="ee_finger_r1" pos="0.003 0 -0.2278">
                                   <inertial pos="0.00278346 -3.29e-06 -0.0257011" quat="0.999784 0 0.0208044 0" mass="0.03327" diaginertia="1.23275e-05 1.066e-05 2.22251e-06"/>
-                                  <!-- <joint name="gripper_finger_r1" pos="0 0 0" axis="-1 0 0" type="slide" limited="true" range="-0.05 0" /> -->
+                                  <joint name="gripper_finger_r1" pos="0 0 0" axis="-1 0 0" type="slide" limited="true" range="-0.05 0" />
                                   <geom class="visual" material="finray_finger_material" mesh="finray_finger_visual"/>
                                   <geom class="collision" name="right_finger_col_0" type="mesh" mesh="finray_finger_collider"/>
                                 </body>
                                 <body name="ee_finger_r2" pos="-0.003 0 -0.2278" quat="4.48966e-11 0 0 1">
                                   <inertial pos="0.00278346 -3.29e-06 -0.0257011" quat="0.999784 0 0.0208044 0" mass="0.03327" diaginertia="1.23275e-05 1.066e-05 2.22251e-06"/>
-                                  <!-- <joint name="gripper_finger_r2" pos="0 0 0" axis="1 0 0" type="slide" limited="true" range="0 0.05" /> -->
+                                  <joint name="gripper_finger_r2" pos="0 0 0" axis="1 0 0" type="slide" limited="true" range="0 0.05" />
                                   <geom class="visual" material="finray_finger_material" mesh="finray_finger_visual"/>
                                   <geom class="collision" name="right_finger_col_1" type="mesh" mesh="finray_finger_collider"/>
                                 </body>
@@ -617,13 +620,13 @@
                                 </body>
                                 <body name="ee_finger_l1" pos="-0.003 0 -0.2278" quat="4.48966e-11 0 0 1">
                                   <inertial pos="0.00278346 -3.29e-06 -0.0257011" quat="0.999784 0 0.0208044 0" mass="0.03327" diaginertia="1.23275e-05 1.066e-05 2.22251e-06"/>
-                                  <!-- <joint name="gripper_finger_l1" pos="0 0 0" axis="-1 0 0" type="slide" limited="true" range="-0.05 0" /> -->
+                                  <joint name="gripper_finger_l1" pos="0 0 0" axis="-1 0 0" type="slide" limited="true" range="-0.05 0" />
                                   <geom class="visual" material="finray_finger_material" mesh="finray_finger_visual"/>
                                   <geom class="collision" name="left_finger_col_0" type="mesh" mesh="finray_finger_collider"/>
                                 </body>
                                 <body name="ee_finger_l2" pos="0.003 0 -0.2278" quat="-1 0 0 8.97932e-11">
                                   <inertial pos="0.00278346 -3.29e-06 -0.0257011" quat="0.999784 0 0.0208044 0" mass="0.03327" diaginertia="1.23275e-05 1.066e-05 2.22251e-06"/>
-                                  <!-- <joint name="gripper_finger_l2" pos="0 0 0" axis="1 0 0" type="slide" limited="true" range="0 0.05" /> -->
+                                  <joint name="gripper_finger_l2" pos="0 0 0" axis="1 0 0" type="slide" limited="true" range="0 0.05" />
                                   <geom class="visual" material="finray_finger_material" mesh="finray_finger_visual"/>
                                   <geom class="collision" name="left_finger_col_1" type="mesh" mesh="finray_finger_collider"/>
                                 </body>
@@ -698,7 +701,15 @@
     <position name="head_0_act" joint="head_0" kp="4000" kv="400" ctrlrange="-0.523 0.523"/>
     <position name="head_1_act" joint="head_1" kp="4000" kv="400" ctrlrange="-0.35 1.57"/>
 
+    <motor name="right_finger_act" joint="gripper_finger_r2" />
+    <motor name="left_finger_act" joint="gripper_finger_l1" /> 
   </actuator>
+
+  <equality>
+    <joint name="right_finger" joint1="gripper_finger_r1" joint2="gripper_finger_r2" polycoef="0 -1 0 0 0"/>
+    <joint name="left_finger" joint1="gripper_finger_l1" joint2="gripper_finger_l2" polycoef="0 -1 0 0 0"/>
+  </equality>
+
 </mujoco>
 
   <!-- <worldbody>

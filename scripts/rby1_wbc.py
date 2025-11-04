@@ -8,10 +8,11 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from queue import SimpleQueue
-from typing import Optional, Tuple, Union
+from typing import Any, Mapping, Optional, Tuple, Union
 
 import mujoco
 import numpy as np
+import yaml
 
 from loop_rate_limiters import RateLimiter
 
@@ -19,8 +20,8 @@ from loop_rate_limiters import RateLimiter
 import sys
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from ik.rby1_whole_body_ik import RBY1WholeBodyIK
 
@@ -30,26 +31,19 @@ from rby1.control import (
     RobotSnapshot,
 )
 
+from gripper.gripper import Gripper
+
 # TRI's IK runs at 500 hz and ours at 100 hz, so scale the gains by 5x
 BASE_ERROR_GAIN = np.array([0.2, 0.2, 0.2], dtype=float)
 # Might need to tune this more
 BASE_VELOCITY_GAIN = np.array([0.09, 0.09, 0.1], dtype=float)
-
-# Init Position
-INIT_POSITION={ 
-    "torso": np.array([0.0, 0.7854, -1.5708, 0.7854, 0.0, 0.0]), 
-    "left_arm": np.array([0.0, 0.0873, 0.0, -2.0944, 0.0, 0.9599, -1.5708]),
-    "right_arm": np.array([0.0, -0.0873, 0.0, -2.0944, 0.0, 0.9599, 1.5708]),
-    "head": np.array([0.0, 0.6109]), 
-    "grippers": np.array([0.1, 0.1])
-}
-
 
 class RobotStateBuffer:
     """Stores the latest robot snapshot retrieved from the controller."""
     def __init__(self):
         self._lock = threading.Lock()
         self.latest: Optional[RobotSnapshot] = None
+        self._gripper_widths: Tuple[float, float] = (0.0, 0.0)
 
     def store(self, snapshot: RobotSnapshot) -> None:
         with self._lock:
@@ -58,6 +52,23 @@ class RobotStateBuffer:
     def load(self) -> Optional[RobotSnapshot]:
         with self._lock:
             return self.latest
+
+    def store_gripper_widths(
+        self,
+        left_width: Optional[float],
+        right_width: Optional[float],
+    ) -> None:
+        with self._lock:
+            current_left, current_right = self._gripper_widths
+            if left_width is not None:
+                current_left = float(left_width)
+            if right_width is not None:
+                current_right = float(right_width)
+            self._gripper_widths = (current_left, current_right)
+
+    def load_gripper_widths(self) -> Tuple[float, float]:
+        with self._lock:
+            return self._gripper_widths
 
 
 @dataclass
@@ -158,16 +169,13 @@ class SharedTargets:
             elapsed = max(0.0, current_time - self.target_set_timestamp)
             alpha = min(1.0, elapsed / duration)
 
-            # We don't want to linearly interpolate gripper width
             lt_p = _lerp_value(self.left_gripper_pos_start, self.left_gripper_pos, alpha)
             lt_q = _slerp_quaternion(self.left_gripper_quat_start, self.left_gripper_quat, alpha)
-            # lw = _lerp_value(self.left_gripper_width_start, self.left_gripper_width, alpha)
-            lw = self.left_gripper_width
+            lw = _lerp_value(self.left_gripper_width_start, self.left_gripper_width, alpha)
 
             rt_p = _lerp_value(self.right_gripper_pos_start, self.right_gripper_pos, alpha)
             rt_q = _slerp_quaternion(self.right_gripper_quat_start, self.right_gripper_quat, alpha)
-            # rw = _lerp_value(self.right_gripper_width_start, self.right_gripper_width, alpha)
-            rw = self.right_gripper_width
+            rw = _lerp_value(self.right_gripper_width_start, self.right_gripper_width, alpha)
 
             hp = _lerp_value(self.head_target_pos_start, self.head_target_pos, alpha)
             hq = _slerp_quaternion(self.head_target_quat_start, self.head_target_quat, alpha)
@@ -264,21 +272,27 @@ def _slerp_quaternion(
 class RBY1WBC:
     """Worker that streams IK solutions to the realtime controller."""
 
-    def __init__(
-        self,
-        model_path: str,
-        address: str = "localhost:50051",
-        ik_frequency_hz: float = 100.0,
-        state_frequency_hz: float = 100.0,
-        trajectory_frequency_hz: float = 10.0,
-        use_interpolation: bool = False,
-        command_timeout_sec: float = 1.0,
-    ):
-        self.model_path = model_path
-        self.address = address
-        self.ik_rate = RateLimiter(frequency=ik_frequency_hz, warn=False)
-        self.state_poll_rate = RateLimiter(frequency=state_frequency_hz, warn=False)
-        self.trajectory_frequency_hz = trajectory_frequency_hz
+    def __init__(self, config_path: str = PROJECT_ROOT + "/config/wbc.yaml"):
+        # Load Controller Config
+        try:
+            config_path = Path(config_path)
+            with config_path.open("r", encoding="utf-8") as f:
+                self.config = yaml.safe_load(f) 
+        except Exception as e:
+            raise Exception(f"Exception while loading config file: {e}")
+        
+        self.address = self.config["address"]
+        self.model_path = PROJECT_ROOT + self.config["model_path"]
+        self.init_position = self.config["init_position"]
+        self.state_frequency_hz = self.config["state_frequency_hz"]
+        self.trajectory_frequency_hz = self.config["trajectory_frequency_hz"]
+        self.ik_frequency_hz = self.config["ik_frequency_hz"]
+        self.use_interpolation = self.config["use_interpolation"]
+        self.command_timeout_sec = self.config["command_timeout_sec"]
+
+        # Initialize Controller loops
+        self.ik_rate = RateLimiter(frequency=self.ik_frequency_hz, warn=False)
+        self.state_poll_rate = RateLimiter(frequency=self.state_frequency_hz, warn=False)
 
         self.shared_targets = SharedTargets()
         self.robot_state = RobotStateBuffer()
@@ -287,9 +301,9 @@ class RBY1WBC:
         self._threads_started = False
         self._model_lock = threading.Lock()
 
-        self.controller = self._init_controller(address, command_timeout_sec)
+        self.controller = self._init_controller(self.address, self.command_timeout_sec)
 
-        self.model = mujoco.MjModel.from_xml_path(model_path)
+        self.model = mujoco.MjModel.from_xml_path(self.model_path)
         self.data = mujoco.MjData(self.model)
         mujoco.mj_forward(self.model, self.data)
 
@@ -297,9 +311,18 @@ class RBY1WBC:
         self._build_joint_mapping()
         self._extract_base_origin()
 
+        # Initialize Gripper
+        self.gripper = Gripper()
+        if self.gripper.initialize():
+            self.gripper.homing()
+            self.gripper.start()
+            print("Successfully initialized gripper")
+        else:
+            self.gripper = None
+            print("Failed to initialize gripper")
+        
         self._state_thread: Optional[threading.Thread] = None
         self._ik_thread: Optional[threading.Thread] = None
-        self.use_interpolation = use_interpolation
 
     def start(self) -> None:
         if self._threads_started:
@@ -354,6 +377,9 @@ class RBY1WBC:
     def get_latest_robot_state(self) -> Optional[RobotSnapshot]:
         return self.robot_state.load()
 
+    def get_latest_gripper_widths(self) -> Tuple[float, float]:
+        return self.robot_state.load_gripper_widths()
+
     def wait_for_first_state(self, timeout_sec: float = 5.0) -> Optional[RobotSnapshot]:
         deadline = time.monotonic() + timeout_sec
         snapshot = None
@@ -387,6 +413,21 @@ class RBY1WBC:
         return controller
 
     def _set_init_position(self) -> None:
+        def _to_array(values: Optional[list[float]]) -> Optional[np.ndarray]:
+            if values is None:
+                return None
+            return np.asarray(values, dtype=float)
+
+        torso_targets = _to_array(self.init_position.get("torso"))
+        right_targets = _to_array(self.init_position.get("right_arm"))
+        left_targets = _to_array(self.init_position.get("left_arm"))
+        head_targets = _to_array(self.init_position.get("head"))
+        gripper_targets = _to_array(self.init_position.get("grippers"))
+
+        if all(target is None for target in (torso_targets, right_targets, left_targets, head_targets, gripper_targets)):
+            print(f"Init config at {self.init_config_path} did not contain any targets; skipping initial position command.")
+            return
+
         print("Setting initial positions...")
         sol_qpos = self.data.qpos.copy()
 
@@ -395,14 +436,18 @@ class RBY1WBC:
         left_indices = getattr(self.ik_solver, "left_arm_qpos_indices", [])
         head_indices = getattr(self.ik_solver, "head_qpos_indices", [])
 
-        for idx, value in zip(torso_indices, INIT_POSITION["torso"]):
-            sol_qpos[int(idx)] = value
-        for idx, value in zip(right_indices, INIT_POSITION["right_arm"]):
-            sol_qpos[int(idx)] = value
-        for idx, value in zip(left_indices, INIT_POSITION["left_arm"]):
-            sol_qpos[int(idx)] = value
-        for idx, value in zip(head_indices, INIT_POSITION["head"]):
-            sol_qpos[int(idx)] = value
+        if torso_targets is not None:
+            for idx, value in zip(torso_indices, torso_targets):
+                sol_qpos[int(idx)] = float(value)
+        if right_targets is not None:
+            for idx, value in zip(right_indices, right_targets):
+                sol_qpos[int(idx)] = float(value)
+        if left_targets is not None:
+            for idx, value in zip(left_indices, left_targets):
+                sol_qpos[int(idx)] = float(value)
+        if head_targets is not None:
+            for idx, value in zip(head_indices, head_targets):
+                sol_qpos[int(idx)] = float(value)
 
         target_body = self._compute_body_commands(sol_qpos)
         snapshot = self.wait_for_first_state()
@@ -424,6 +469,9 @@ class RBY1WBC:
                 self.ik_rate.sleep()
             self.controller.set_body_position_targets(target_body.tolist())
 
+        if self.gripper and gripper_targets is not None:
+            self.gripper.set_target(gripper_targets.tolist())
+        self.robot_state.store_gripper_widths(float(gripper_targets[0]),  float(gripper_targets[1]))
         print("Initial positions set.")
 
     def _state_poll_loop(self) -> None:
@@ -458,7 +506,9 @@ class RBY1WBC:
                 print(f"[wbc] IK failed: {_info}")
 
             try:
-                # TODO: Add gripper commands
+                if self.gripper and left_width is not None and right_width is not None:
+                    self.gripper.set_target([right_width, left_width])
+                self.robot_state.store_gripper_widths(left_width, right_width)
                 body_targets = self._compute_body_commands(sol_qpos)
                 twist = self._compute_base_twist_command(sol_qpos, sol_vel, current_qpos)
                 self.controller.set_body_position_targets(body_targets.tolist())
@@ -540,6 +590,14 @@ class RBY1WBC:
             adr = mapping[idx]
             if adr is not None:
                 qpos[adr] = joint_positions[idx]
+
+        # Gripper joints handling
+        left_width, right_width = self.robot_state.load_gripper_widths()
+        mujoco_mapping = getattr(self, "_mj_joint_qadr", {})
+        l1_index, l2_index = mujoco_mapping["gripper_finger_l1"], mujoco_mapping["gripper_finger_l2"]
+        r1_index, r2_index = mujoco_mapping["gripper_finger_r1"], mujoco_mapping["gripper_finger_r2"]
+        qpos[l2_index], qpos[r2_index] = left_width/2, right_width/2
+        qpos[l1_index], qpos[r1_index] = -left_width/2, -right_width/2
         return qpos
 
     def _build_joint_mapping(self) -> None:
@@ -582,7 +640,7 @@ class RBY1WBC:
                 if name == "world_j":
                     self._base_free_adr = adr
                 continue
-            if jtype == mujoco.mjtJoint.mjJNT_HINGE:
+            elif jtype in [mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE]:
                 self._mj_joint_qadr[name] = adr
 
         if self._base_free_adr is None:
