@@ -314,6 +314,7 @@ class RBY1WBC:
         # Initialize Gripper
         self.gripper = Gripper()
         if self.gripper.initialize():
+            self.gripper.homing()
             self.gripper.start()
             print("Successfully initialized gripper")
         else:
