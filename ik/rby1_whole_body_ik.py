@@ -629,7 +629,8 @@ class RBY1WholeBodyIK:
         torso_1_group = {"torso_1_col_0", "torso_1_col_1", "torso_1_col_2", "torso_1_col_3", "torso_1_col_4", "torso_1_col_5", "torso_1_col_6", "torso_1_col_7", "torso_1_col_8", "torso_1_col_9", "torso_1_col_10"}
         torso_2_group = {"torso_2_col_0", "torso_2_col_1", "torso_2_col_2", "torso_2_col_3", "torso_2_col_4", "torso_2_col_5", "torso_2_col_6", "torso_2_col_7", "torso_2_col_8", "torso_2_col_9", "torso_2_col_10"}
         torso_4_group = {"torso_4_col_0", "torso_4_col_1", "torso_4_col_2", "torso_4_col_3"}
-        torso_5_group = {"torso_5_col_0", "torso_5_col_1", "torso_5_col_2", "torso_5_col_3", "torso_5_col_4", "torso_5_col_5"}
+        torso_5_group = {"torso_5_col_0", "torso_5_col_1", "torso_5_col_2", "torso_5_col_3", "torso_5_col_4"}
+        head_group = {"head_col_0"}
 
         right_arm_0_group = {"right_arm_0_col_0", "right_arm_0_col_1", "right_arm_0_col_2"}
         right_arm_1_group = {"right_arm_1_col_0"}
@@ -638,8 +639,8 @@ class RBY1WholeBodyIK:
         right_arm_4_group = {"right_arm_4_col_0", "right_arm_4_col_1", "right_arm_4_col_2", "right_arm_4_col_3", "right_arm_4_col_4"}
         right_arm_5_group = {"right_arm_5_col_0", "right_arm_5_col_1", "right_arm_5_col_2"}
         right_arm_6_group = {"right_arm_6_col_0"}
-        right_arm_7_group = {"right_arm_7_col_0"}
-        right_ee_group = {"right_ee_col_0", "right_ee_col_1", "right_ee_col_2", "right_ee_col_3", "right_ee_col_4"}
+        right_arm_7_group = {"right_arm_7_col_0", "right_wrist_cam_col_0", "right_wrist_cam_col_1", "right_wrist_cam_col_2"}
+        right_ee_group = {"right_ee_col_0", "right_ee_col_1", "right_ee_col_2", "right_ee_col_3", "right_ee_col_4", "right_finger_col_0", "right_finger_col_1"}
 
         left_arm_0_group = {"left_arm_0_col_0", "left_arm_0_col_1", "left_arm_0_col_2"}
         left_arm_1_group = {"left_arm_1_col_0"}
@@ -648,10 +649,10 @@ class RBY1WholeBodyIK:
         left_arm_4_group = {"left_arm_4_col_0", "left_arm_4_col_1", "left_arm_4_col_2", "left_arm_4_col_3", "left_arm_4_col_4"}
         left_arm_5_group = {"left_arm_5_col_0", "left_arm_5_col_1", "left_arm_5_col_2"}
         left_arm_6_group = {"left_arm_6_col_0"}
-        left_arm_7_group = {"left_arm_7_col_0"}
-        left_ee_group = {"left_ee_col_0", "left_ee_col_1", "left_ee_col_2", "left_ee_col_3", "left_ee_col_4"}
+        left_arm_7_group = {"left_arm_7_col_0", "left_wrist_cam_col_0", "left_wrist_cam_col_1", "left_wrist_cam_col_2"}
+        left_ee_group = {"left_ee_col_0", "left_ee_col_1", "left_ee_col_2", "left_ee_col_3", "left_ee_col_4", "left_finger_col_0", "left_finger_col_1"}
 
-        base_torso_group = base_group | torso_0_group | torso_1_group | torso_2_group | torso_4_group | torso_5_group
+        base_torso_group = base_group | torso_0_group | torso_1_group | torso_2_group | torso_4_group | torso_5_group | head_group
         left_arm_group = left_arm_0_group | left_arm_1_group | left_arm_2_group | left_arm_3_group | left_arm_4_group | left_arm_5_group | left_arm_6_group | left_arm_7_group | left_ee_group
         right_arm_group = right_arm_0_group | right_arm_1_group | right_arm_2_group | right_arm_3_group | right_arm_4_group | right_arm_5_group | right_arm_6_group | right_arm_7_group | right_ee_group
 
