@@ -18,7 +18,7 @@ PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from scripts.rby1_wbc import RBY1WBC
+from control.rby1_wbc import RBY1WBC
 
 
 class RBY1WBCGui:

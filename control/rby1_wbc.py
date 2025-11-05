@@ -16,16 +16,9 @@ import yaml
 
 from loop_rate_limiters import RateLimiter
 
-# Ensure project root is on sys.path regardless of current working directory.
-import sys
-PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
-
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
 from ik.rby1_whole_body_ik import RBY1WholeBodyIK
 
-from rby1.control import (
+from . import (
     Config as ControllerConfig,
     RealtimeDriver,
     RobotSnapshot,
@@ -33,6 +26,7 @@ from rby1.control import (
 
 from gripper.gripper import Gripper
 
+PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 # TRI's IK runs at 500 hz and ours at 100 hz, so scale the gains by 5x
 BASE_ERROR_GAIN = np.array([0.2, 0.2, 0.2], dtype=float)
 # Might need to tune this more
