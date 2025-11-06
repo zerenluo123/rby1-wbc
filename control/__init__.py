@@ -3,7 +3,14 @@
 from pathlib import Path
 from importlib import import_module
 
-__all__ = ["Config", "RealtimeDriver", "RobotSnapshot", "debug_echo"]
+__all__ = [
+    "Config",
+    "RealtimeDriver",
+    "RobotSnapshot",
+    "AdmittanceController",
+    "AdmittanceControllerConfig",
+    "debug_echo",
+]
 
 # Ensure Python searches both the source tree and the build directory for the
 # compiled module. The pybind11 extension is emitted into ../build/.
@@ -17,4 +24,6 @@ _bindings = import_module(".rby1_controller", __name__)
 Config = _bindings.Config
 RealtimeDriver = _bindings.RealtimeDriver
 RobotSnapshot = _bindings.RobotSnapshot
+AdmittanceController = _bindings.AdmittanceController
+AdmittanceControllerConfig = _bindings.AdmittanceControllerConfig
 debug_echo = _bindings.debug_echo

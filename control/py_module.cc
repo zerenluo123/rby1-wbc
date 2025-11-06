@@ -1,4 +1,6 @@
+#include <chrono>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -8,6 +10,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include "force_control/admittance_controller.h"
 #include "realtime_driver.h"
 
 namespace py = pybind11;
@@ -69,9 +72,9 @@ void BindSnapshot(py::module_& m) {
           })
       .def_property_readonly(
           "odom_SE2",
-          [](const RealtimeDriver::RobotSnapshot& self) {
-            return self.odom_SE2;
-})
+      [](const RealtimeDriver::RobotSnapshot& self) {
+        return self.odom_SE2;
+      })
       .def_property_readonly(
           "left_ee_wrench",
           [](const RealtimeDriver::RobotSnapshot& self) {
@@ -177,8 +180,127 @@ void BindDriver(py::module_& m) {
       .def("__exit__",
            [](RealtimeDriver& self, py::object, py::object, py::object) {
              self.Stop();
-             return false;
-           });
+           return false;
+          });
+}
+
+void BindAdmittanceController(py::module_& m) {
+  using Controller = ::AdmittanceController;
+  using Config = Controller::AdmittanceControllerConfig;
+  using Compliance = Config::ComplianceParameters6d;
+  using PID = Config::PIDGains;
+
+  auto config_cls = py::class_<Config>(m, "AdmittanceControllerConfig");
+  py::class_<Compliance>(config_cls, "ComplianceParameters6d")
+      .def(py::init<>())
+      .def_readwrite("stiffness", &Compliance::stiffness,
+                     "Diagonal stiffness matrix (6x6).")
+      .def_readwrite("damping", &Compliance::damping,
+                     "Diagonal damping matrix (6x6).")
+      .def_readwrite("inertia", &Compliance::inertia,
+                     "Diagonal inertia matrix (6x6).")
+      .def_readwrite("stiction", &Compliance::stiction,
+                     "Static friction vector (6,).");
+
+  py::class_<PID>(config_cls, "PIDGains")
+      .def(py::init<>())
+      .def_readwrite("P_trans", &PID::P_trans)
+      .def_readwrite("I_trans", &PID::I_trans)
+      .def_readwrite("D_trans", &PID::D_trans)
+      .def_readwrite("P_rot", &PID::P_rot)
+      .def_readwrite("I_rot", &PID::I_rot)
+      .def_readwrite("D_rot", &PID::D_rot);
+
+  config_cls
+      .def(py::init<>())
+      .def_readwrite("dt", &Config::dt)
+      .def_readwrite("log_to_file", &Config::log_to_file)
+      .def_readwrite("log_file_path", &Config::log_file_path)
+      .def_readwrite("alert_overrun", &Config::alert_overrun)
+      .def_readwrite("compliance6d", &Config::compliance6d)
+      .def_readwrite("max_spring_force_magnitude",
+                     &Config::max_spring_force_magnitude)
+      .def_readwrite("max_spring_torque_magnitude",
+                     &Config::max_spring_torque_magnitude)
+      .def_readwrite("direct_force_control_gains",
+                     &Config::direct_force_control_gains)
+      .def_readwrite("direct_force_control_I_limit",
+                     &Config::direct_force_control_I_limit);
+
+  py::class_<Controller>(m, "AdmittanceController")
+      .def(py::init<>())
+      .def(
+          "init",
+          [](Controller& self, const Config& config,
+             const Eigen::Matrix<double, 7, 1>& pose_current,
+             std::optional<int64_t> time_ns) {
+            RUT::TimePoint time_point;
+            if (time_ns.has_value()) {
+              auto duration = std::chrono::nanoseconds(time_ns.value());
+              time_point = RUT::TimePoint(
+                  std::chrono::duration_cast<RUT::Clock::duration>(duration));
+            } else {
+              time_point = RUT::Clock::now();
+            }
+            return self.init(time_point, config, pose_current);
+          },
+          py::arg("config"), py::arg("pose_current"),
+          py::arg("time_ns") = std::nullopt,
+          "Initialize the controller with the provided configuration. "
+          "Optionally provide a start time in nanoseconds.")
+      .def(
+          "set_robot_status",
+          [](Controller& self, const Eigen::Matrix<double, 7, 1>& pose_WT,
+             const Eigen::Matrix<double, 6, 1>& wrench_T) {
+            py::gil_scoped_release release;
+            self.setRobotStatus(pose_WT, wrench_T);
+          },
+          py::arg("pose_WT"), py::arg("wrench_T"),
+          "Update the current robot pose and measured wrench.")
+      .def(
+          "set_robot_reference",
+          [](Controller& self, const Eigen::Matrix<double, 7, 1>& pose_WT,
+             const Eigen::Matrix<double, 6, 1>& wrench_WTr) {
+            py::gil_scoped_release release;
+            self.setRobotReference(pose_WT, wrench_WTr);
+          },
+          py::arg("pose_WT"), py::arg("wrench_WTr"),
+          "Set the desired pose and wrench reference.")
+      .def(
+          "set_force_controlled_axis",
+          [](Controller& self, const Eigen::Matrix<double, 6, 6>& Tr,
+             int n_af) {
+            py::gil_scoped_release release;
+            self.setForceControlledAxis(Tr, n_af);
+          },
+          py::arg("Tr"), py::arg("n_af"),
+          "Specify the force-controlled axes selection.")
+      .def(
+          "set_stiffness_matrix",
+          [](Controller& self, const Eigen::Matrix<double, 6, 6>& stiffness) {
+            py::gil_scoped_release release;
+            self.setStiffnessMatrix(stiffness);
+          },
+          py::arg("stiffness"))
+      .def(
+          "set_damping_matrix",
+          [](Controller& self, const Eigen::Matrix<double, 6, 6>& damping) {
+            py::gil_scoped_release release;
+            self.setDampingMatrix(damping);
+          },
+          py::arg("damping"))
+      .def(
+          "step",
+          [](Controller& self) {
+            RUT::Vector7d pose = RUT::Vector7d::Zero();
+            int status;
+            {
+              py::gil_scoped_release release;
+              status = self.step(pose);
+            }
+            return py::make_tuple(status, pose);
+          },
+          "Run one control step and return (status, pose).");
 }
 
 }  // namespace
@@ -189,6 +311,7 @@ PYBIND11_MODULE(rby1_controller, m) {
   BindSnapshot(m);
   BindConfig(m);
   BindDriver(m);
+  BindAdmittanceController(m);
 
   m.def(
       "debug_echo",
