@@ -71,6 +71,26 @@ void BindSnapshot(py::module_& m) {
           "odom_SE2",
           [](const RealtimeDriver::RobotSnapshot& self) {
             return self.odom_SE2;
+})
+      .def_property_readonly(
+          "left_ee_wrench",
+          [](const RealtimeDriver::RobotSnapshot& self) {
+            return self.left_ee_wrench;
+          })
+      .def_property_readonly(
+          "right_ee_wrench",
+          [](const RealtimeDriver::RobotSnapshot& self) {
+            return self.right_ee_wrench;
+          })
+      .def_property_readonly(
+          "left_ft_valid",
+          [](const RealtimeDriver::RobotSnapshot& self) {
+            return self.left_ft_valid;
+          })
+      .def_property_readonly(
+          "right_ft_valid",
+          [](const RealtimeDriver::RobotSnapshot& self) {
+            return self.right_ft_valid;
           })
       .def_readonly("is_valid", &RealtimeDriver::RobotSnapshot::is_valid);
 }
