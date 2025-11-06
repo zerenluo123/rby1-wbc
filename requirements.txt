@@ -6,3 +6,4 @@ pybind11
 pandas
 transforms3d
 pyyaml
+scipy
