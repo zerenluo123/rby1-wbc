@@ -585,6 +585,27 @@ void RealtimeDriver::HandleStateUpdate(
         snapshot.odom_SE2(r, c) = state.odometry(r, c);
       }
     }
+    auto sanitize_sensor =
+        [](const rb::FTSensorData& sensor,
+           Eigen::Matrix<double, 6, 1>& wrench_out) -> bool {
+      wrench_out.head<3>() = sensor.force;
+      wrench_out.tail<3>() = sensor.torque;
+      if (!wrench_out.allFinite()) {
+        wrench_out.setZero();
+        return false;
+      }
+      const double max_abs = wrench_out.array().abs().maxCoeff();
+      if (!std::isfinite(max_abs) || max_abs > 1e6) {
+        wrench_out.setZero();
+        return false;
+      }
+      return true;
+    };
+
+    snapshot.left_ft_valid =
+        sanitize_sensor(state.ft_sensor_left, snapshot.left_ee_wrench);
+    snapshot.right_ft_valid =
+        sanitize_sensor(state.ft_sensor_right, snapshot.right_ee_wrench);
     snapshot.is_valid = true;
   }
 }
