@@ -530,6 +530,14 @@ class RBY1WBC:
                         right_wrench = np.zeros(6, dtype=float)
                     else:
                         right_wrench = snapshot.right_ee_wrench
+                left_wrench_copy = left_wrench.copy()
+                left_wrench[0] = left_wrench_copy[1]
+                left_wrench[1] = left_wrench_copy[0]
+                left_wrench[2] = -left_wrench_copy[2]
+                right_wrench_copy = right_wrench.copy()
+                right_wrench[0] = -right_wrench_copy[1]
+                right_wrench[1] = -right_wrench_copy[0]
+                right_wrench[2] = -right_wrench_copy[2]
                 self._admittance_controller_left.set_robot_status(left_pose_vec, left_wrench)
                 if left_quat is not None:
                     left_pos, left_quat = self._apply_admittance(
