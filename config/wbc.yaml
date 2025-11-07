@@ -18,6 +18,7 @@ trajectory_frequency_hz: 10.0
 ik_frequency_hz: 100.0
 use_interpolation: true
 command_timeout_sec: 0.1
+low_pass_freq_hz: 1
 
 admittance:
   enabled: true

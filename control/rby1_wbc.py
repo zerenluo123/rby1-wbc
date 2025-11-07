@@ -285,6 +285,7 @@ class RBY1WBC:
         self.ik_frequency_hz = self.config["ik_frequency_hz"]
         self.use_interpolation = self.config["use_interpolation"]
         self.command_timeout_sec = self.config["command_timeout_sec"]
+        self.low_pass_freq_hz = float(self.config.get("low_pass_freq_hz", 1.0))
 
         admittance_cfg = self.config.get("admittance", {})
         self.admittance_enabled = bool(admittance_cfg.get("enabled", False))
