@@ -93,4 +93,5 @@ class Gripper:
                 )
 
     def set_target(self, target_width: [float, float]):
-        self.target_q = -100 * np.array(target_width) + self.max_q
+        target_width = np.array(target_width) * 10
+        self.target_q = (1 - target_width) * (self.max_q - self.min_q) + self.min_q
