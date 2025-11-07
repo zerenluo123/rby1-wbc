@@ -93,5 +93,12 @@ class Gripper:
                 )
 
     def set_target(self, target_width: [float, float]):
-        target_width = np.array(target_width) * 10
-        self.target_q = (1 - target_width) * (self.max_q - self.min_q) + self.min_q
+        """
+        Parameters
+        ----------
+        target_width : [float, float]
+        Desired gripper opening width in meters, for each finger (range: 0.00 to 0.10 m).
+        ----------
+        """
+        target_width = np.array(target_width) * 10  # Normalize width to [0, 1] range
+        self.target_q = (1 - target_width) * (self.max_q - self.min_q) + self.min_q  # Map to joint position range
