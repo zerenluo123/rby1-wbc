@@ -58,7 +58,7 @@ class Trajectory:
         )
 
         # Camera info
-        self.cameras_left: CameraTrajectcory = self._parse_list_to_dataclass(
+        self.cameras_left: CameraTrajectory = self._parse_list_to_dataclass(
             trajectory_data.get("cameras_left", []), CameraTrajectory
         )
         self.cameras_right: CameraTrajectory = self._parse_list_to_dataclass(
