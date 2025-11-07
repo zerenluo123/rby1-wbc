@@ -8,3 +8,5 @@ venv/
 venv/
 build/
 *.so
+*.pkl
+*.jsonl

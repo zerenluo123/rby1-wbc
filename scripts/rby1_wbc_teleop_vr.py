@@ -421,6 +421,11 @@ def main() -> None:
         action="store_true",
         help="Skip launching the MuJoCo viewer (useful for debugging controller only).",
     )
+    parser.add_argument(
+        "--save",
+        action="store_true",
+        help="Persist computed teleop trajectory as a dataset-style pickle under demo/.",
+    )
     args = parser.parse_args()
 
     if args.headless:
@@ -428,7 +433,7 @@ def main() -> None:
 
     wbc = RBY1WBC()
     wbc.start()
-    teleop = TeleopVR(wbc=wbc, local_ip=args.local_ip, meta_quest_ip=args.meta_quest_ip)
+    teleop = TeleopVR(wbc=wbc, local_ip=args.local_ip, meta_quest_ip=args.meta_quest_ip, save_trajectory=args.save)
     if not teleop.initialize():
         raise Exception("Teleoperation can not be initialized!")
 

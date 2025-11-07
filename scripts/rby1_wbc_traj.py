@@ -426,7 +426,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="RBY1 whole-body IK GUI decoupled from WBC thread")
     parser.add_argument(
         "--trajectory",
-        default=PROJECT_ROOT + "/demo/dataset_plan.pkl",
+        default=PROJECT_ROOT + "/demo/teleop_20251107-112923.pkl",
         help="Path to a pickle file containing trajectory episodes",
     )
     parser.add_argument(
