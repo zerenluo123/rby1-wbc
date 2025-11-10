@@ -40,10 +40,10 @@ def _normalize(quat: np.ndarray) -> np.ndarray:
     return quat / norm
 
 
-def _apply_global_tilts(initial_quat: np.ndarray, tilt_x: float, tilt_y: float) -> np.ndarray:
-    """Returns the pose quaternion after tilting about world X then Y (degrees)."""
+def _apply_global_tilts(initial_quat: np.ndarray, tilt_x: float, tilt_y: float, tilt_z: float) -> np.ndarray:
+    """Returns the pose quaternion after tilting about world X, Y, then Z (degrees)."""
     base = Rotation.from_quat(_wxyz_to_xyzw(initial_quat))
-    tilt = Rotation.from_euler("xy", [tilt_x, tilt_y], degrees=True)
+    tilt = Rotation.from_euler("xyz", [tilt_x, tilt_y, tilt_z], degrees=True)
     result = tilt * base
     return _normalize(_xyzw_to_wxyz(result.as_quat()))
 
@@ -91,6 +91,9 @@ class CalibrationConfig:
     tilt_y_min: float
     tilt_y_max: float
     tilt_y_count: int
+    tilt_z_min: float
+    tilt_z_max: float
+    tilt_z_count: int
     move_duration: float
     settle_time: float
     sample_duration: float
@@ -138,6 +141,7 @@ class FTCalibrator:
 
         tilt_x_vals = list(_linspace(self.cfg.tilt_x_min, self.cfg.tilt_x_max, self.cfg.tilt_x_count))
         tilt_y_vals = list(_linspace(self.cfg.tilt_y_min, self.cfg.tilt_y_max, self.cfg.tilt_y_count))
+        tilt_z_vals = list(_linspace(self.cfg.tilt_z_min, self.cfg.tilt_z_max, self.cfg.tilt_z_count))
 
         quaternions: List[np.ndarray] = []
         wrenches: List[np.ndarray] = []
@@ -145,29 +149,30 @@ class FTCalibrator:
         print(f"Starting FT calibration on {self.cfg.arm} arm...")
         for tx in tilt_x_vals:
             for ty in tilt_y_vals:
-                print(f"  -> Tilt X={tx:.1f} deg, Y={ty:.1f} deg")
-                target_quat = _apply_global_tilts(initial_quat, tx, ty)
-                if self.cfg.arm == "left":
-                    left_target_quat = target_quat
-                else:
-                    right_target_quat = target_quat
+                for tz in tilt_z_vals:
+                    print(f"  -> Tilt X={tx:.1f} deg, Y={ty:.1f} deg, Z={tz:.1f} deg")
+                    target_quat = _apply_global_tilts(initial_quat, tx, ty, tz)
+                    if self.cfg.arm == "left":
+                        left_target_quat = target_quat
+                    else:
+                        right_target_quat = target_quat
 
-                self.wbc.update_targets(
-                    left_target_pos,
-                    left_target_quat,
-                    right_target_pos,
-                    right_target_quat,
-                    left_width=gripper_left,
-                    right_width=gripper_right,
-                    duration=self.cfg.move_duration,
-                )
-                self._wait_for_settle(target_quat)
-                wrench_avg = self._sample_wrench()
-                pose = self._capture_pose()
-                if pose is None:
-                    raise RuntimeError("Failed to capture pose for current tilt")
-                quaternions.append(_normalize(pose[3:].copy()))
-                wrenches.append(wrench_avg)
+                    self.wbc.update_targets(
+                        left_target_pos,
+                        left_target_quat,
+                        right_target_pos,
+                        right_target_quat,
+                        left_width=gripper_left,
+                        right_width=gripper_right,
+                        duration=self.cfg.move_duration,
+                    )
+                    self._wait_for_settle(target_quat)
+                    wrench_avg = self._sample_wrench()
+                    pose = self._capture_pose()
+                    if pose is None:
+                        raise RuntimeError("Failed to capture pose for current tilt")
+                    quaternions.append(_normalize(pose[3:].copy()))
+                    wrenches.append(wrench_avg)
 
         print("Returning to initial orientation...")
         if self.cfg.arm == "left":
@@ -304,14 +309,17 @@ class FTCalibrator:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Calibrate FT sensor using the RBY1 WBC.")
     parser.add_argument("--wbc-config", default=str(Path(PROJECT_ROOT, "config/wbc.yaml")), help="Path to the WBC YAML config.")
-    parser.add_argument("--arm", choices=("left", "right"), default="right", help="Which arm's FT sensor to calibrate.")
-    parser.add_argument("--tilt-x-min", type=float, default=0.0, help="Minimum X tilt in degrees.")
-    parser.add_argument("--tilt-x-max", type=float, default=35.0, help="Maximum X tilt in degrees.")
+    parser.add_argument("--arm", choices=("left", "right"), default="left", help="Which arm's FT sensor to calibrate.")
+    parser.add_argument("--tilt-x-min", type=float, default=-45, help="Minimum X tilt in degrees.")
+    parser.add_argument("--tilt-x-max", type=float, default=45.0, help="Maximum X tilt in degrees.")
     parser.add_argument("--tilt-x-count", type=int, default=3, help="Number of samples along the X tilt range.")
-    parser.add_argument("--tilt-y-min", type=float, default=-35.0, help="Minimum Y tilt in degrees.")
-    parser.add_argument("--tilt-y-max", type=float, default=35.0, help="Maximum Y tilt in degrees.")
+    parser.add_argument("--tilt-y-min", type=float, default=-45.0, help="Minimum Y tilt in degrees.")
+    parser.add_argument("--tilt-y-max", type=float, default=45.0, help="Maximum Y tilt in degrees.")
     parser.add_argument("--tilt-y-count", type=int, default=3, help="Number of samples along the Y tilt range.")
-    parser.add_argument("--move-duration", type=float, default=5.0, help="Blend duration when updating IK targets.")
+    parser.add_argument("--tilt-z-min", type=float, default=-45.0, help="Minimum Z/yaw rotation in degrees.")
+    parser.add_argument("--tilt-z-max", type=float, default=45.0, help="Maximum Z/yaw rotation in degrees.")
+    parser.add_argument("--tilt-z-count", type=int, default=3, help="Number of samples along the Z rotation range.")
+    parser.add_argument("--move-duration", type=float, default=10.0, help="Blend duration when updating IK targets.")
     parser.add_argument("--settle-time", type=float, default=0.5, help="Extra delay after settling before sampling (seconds).")
     parser.add_argument("--settle-tolerance-deg", type=float, default=2.0, help="Orientation error allowed before sampling.")
     parser.add_argument("--settle-timeout", type=float, default=7.0, help="Maximum wait for pose to settle (seconds).")
@@ -330,6 +338,9 @@ def main() -> None:
         tilt_y_min=args.tilt_y_min,
         tilt_y_max=args.tilt_y_max,
         tilt_y_count=max(1, args.tilt_y_count),
+        tilt_z_min=args.tilt_z_min,
+        tilt_z_max=args.tilt_z_max,
+        tilt_z_count=max(1, args.tilt_z_count),
         move_duration=max(0.1, args.move_duration),
         settle_time=max(0.0, args.settle_time),
         sample_duration=max(0.1, args.sample_duration),
