@@ -83,10 +83,13 @@ class TeleopLogger:
         hands = controller_state.get("hands", {})
         left = hands.get("left")
         right = hands.get("right")
+        head = controller_state.get("head")
         if left:
             entry["left"] = self._sanitize_pose_entry(left)
         if right:
             entry["right"] = self._sanitize_pose_entry(right)
+        if head:
+            entry["head"] = self._sanitize_pose_entry(head)
         with self._lock:
             self._controller_samples.append(entry)
 
