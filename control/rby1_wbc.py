@@ -25,6 +25,7 @@ from . import (
     AdmittanceController,
     AdmittanceControllerConfig,
 )
+from .ft_calibrator import FTCalibrator
 
 from gripper.gripper import Gripper
 
@@ -301,6 +302,9 @@ class RBY1WBC:
 
         if self.admittance_enabled:
             self._configure_admittance(admittance_cfg)
+            self._ft_calibrator = FTCalibrator()
+        else:
+            self._ft_calibrator = None
 
         # Initialize Controller loops
         self.ik_rate = RateLimiter(frequency=self.ik_frequency_hz, warn=False)
@@ -399,6 +403,16 @@ class RBY1WBC:
 
     def get_latest_gripper_widths(self) -> Tuple[float, float]:
         return self.robot_state.load_gripper_widths()
+
+    def get_end_effector_pose(
+        self, snapshot: Optional[RobotSnapshot] = None
+    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """Returns (left_pose, right_pose) in the world frame for a snapshot."""
+        snap = snapshot if snapshot is not None else self.robot_state.load()
+        qpos = self.snapshot_to_qpos(snap)
+        if qpos is None:
+            return None
+        return self._compute_end_effector_world_pose(qpos)
 
     def wait_for_first_state(self, timeout_sec: float = 5.0) -> Optional[RobotSnapshot]:
         deadline = time.monotonic() + timeout_sec
@@ -531,14 +545,12 @@ class RBY1WBC:
                         right_wrench = np.zeros(6, dtype=float)
                     else:
                         right_wrench = snapshot.right_ee_wrench
-                left_wrench_copy = left_wrench.copy()
-                left_wrench[0] = left_wrench_copy[1]
-                left_wrench[1] = left_wrench_copy[0]
-                left_wrench[2] = -left_wrench_copy[2]
-                right_wrench_copy = right_wrench.copy()
-                right_wrench[0] = -right_wrench_copy[1]
-                right_wrench[1] = -right_wrench_copy[0]
-                right_wrench[2] = -right_wrench_copy[2]
+                left_wrench, right_wrench = self._ft_calibrator.calibrate(
+                    left_wrench,
+                    right_wrench,
+                    left_pose_vec,
+                    right_pose_vec,
+                )
                 self._admittance_controller_left.set_robot_status(left_pose_vec, left_wrench)
                 if left_quat is not None:
                     left_pos, left_quat = self._apply_admittance(
