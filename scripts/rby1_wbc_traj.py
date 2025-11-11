@@ -230,7 +230,7 @@ class RBY1WBCTrajectory:
 
         frame_mat = np.zeros(9, dtype=np.float64)
         mujoco.mju_quat2Mat(frame_mat, quat_arr)
-        rot = frame_mat.reshape(3, 3, order="F")
+        rot = frame_mat.reshape(3, 3)
 
         for axis_idx, axis_color in enumerate(axis_colors):
             if scene.ngeom >= scene.maxgeom:
