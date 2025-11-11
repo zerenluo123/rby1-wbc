@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import pickle
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -207,7 +207,7 @@ def describe_controller_window(
             f"keys={sorted(k for k in entry.keys() if not k.startswith('_'))}"
             f"{label_suffix}"
         )
-        for side in ("left", "right"):
+        for side in ("left", "right", "head"):
             pose = entry.get(side)
             if not pose:
                 continue
@@ -218,10 +218,6 @@ def describe_controller_window(
                 f"[{', '.join(f'{p:.4f}' for p in pos)}] rot="
                 f"[{', '.join(f'{r:.4f}' for r in rot)}]"
             )
-        ctrl_state = entry.get("controller_state")
-        if ctrl_state:
-            print(f"  controller_state keys: {list(ctrl_state.keys())}")
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -245,6 +241,18 @@ def parse_args() -> argparse.Namespace:
         default="left",
         help="Which hand/EE to inspect (default: left).",
     )
+    parser.add_argument(
+        "--start-index",
+        type=int,
+        default=0,
+        help="Only consider target samples at or after this index when detecting jumps.",
+    )
+    parser.add_argument(
+        "--end-index",
+        type=int,
+        default=None,
+        help="Only consider target samples strictly before this index when detecting jumps.",
+    )
     return parser.parse_args()
 
 
@@ -253,7 +261,45 @@ def main() -> None:
     controller_log = load_jsonl(args.log)
     episode = load_episode(args.trajectory)
     tcp_pose, timestamps = extract_target_series(episode, args.hand)
-    shift_event = detect_largest_jump(tcp_pose, timestamps)
+    total_samples = len(tcp_pose)
+    start_idx = int(args.start_index)
+    if start_idx < 0:
+        raise ValueError("--start-index must be non-negative")
+    if start_idx >= total_samples - 1:
+        raise ValueError(
+            f"--start-index {start_idx} leaves fewer than two samples (total {total_samples})"
+        )
+
+    end_idx_arg = args.end_index
+    if end_idx_arg is None:
+        end_idx = total_samples
+    else:
+        end_idx = int(end_idx_arg)
+        if end_idx <= start_idx + 1:
+            raise ValueError("--end-index must be at least two samples after --start-index")
+        if end_idx > total_samples:
+            raise ValueError(
+                f"--end-index {end_idx} exceeds available samples (total {total_samples})"
+            )
+
+    effective = end_idx - start_idx
+    if effective < 2:
+        raise ValueError("Need at least two samples between start and end indices")
+
+    if start_idx:
+        print(f"[analyze] Skipping first {start_idx} target samples before jump search.")
+    if end_idx < total_samples:
+        print(f"[analyze] Limiting jump search to samples before index {end_idx}.")
+
+    tcp_pose_view = tcp_pose[start_idx:end_idx]
+    timestamps_view = timestamps[start_idx:end_idx]
+    shift_event = detect_largest_jump(tcp_pose_view, timestamps_view)
+    if start_idx:
+        shift_event = replace(
+            shift_event,
+            idx_before=shift_event.idx_before + start_idx,
+            idx_after=shift_event.idx_after + start_idx,
+        )
     describe_shift(shift_event)
     matches, highlights = controller_entries_span(
         controller_log, shift_event.ts_before, shift_event.ts_after
