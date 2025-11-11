@@ -165,10 +165,10 @@ class RBY1WBCTeleopVR:
         )
 
         errors = [err for err in (left_err, right_err, head_err) if err is not None]
-        # if errors:
-        #     msg = f"[EE error] {' | '.join(errors)}"
-        #     sys.stdout.write(f"\r{msg}\x1b[K")
-        #     sys.stdout.flush()
+        if errors:
+            msg = f"[EE error] {' | '.join(errors)}"
+            sys.stdout.write(f"\r{msg}\x1b[K")
+            sys.stdout.flush()
 
         mujoco.mj_camlight(self.model, self.data)
         self.viewer.sync()
@@ -233,7 +233,7 @@ class RBY1WBCTeleopVR:
 
         frame_mat = np.zeros(9, dtype=np.float64)
         mujoco.mju_quat2Mat(frame_mat, quat_arr)
-        rot = frame_mat.reshape(3, 3, order="F")
+        rot = frame_mat.reshape(3, 3)
 
         for axis_idx, axis_color in enumerate(axis_colors):
             if scene.ngeom >= scene.maxgeom:
