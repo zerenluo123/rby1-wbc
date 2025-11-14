@@ -7,3 +7,5 @@ pandas
 transforms3d
 pyyaml
 scipy
+flask
+flask-socketio
