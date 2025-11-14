@@ -22,6 +22,8 @@ from .teleop_vr import TeleopTargets, TeleopLogger
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)-8s - %(message)s"
 )
+# Silence the noisy Flask/Werkzeug request logs so the teleop logs stay focused.
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 
 ARKIT_TCP_ROT = np.array(
