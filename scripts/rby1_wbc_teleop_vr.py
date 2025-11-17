@@ -165,10 +165,10 @@ class RBY1WBCTeleopVR:
         )
 
         errors = [err for err in (left_err, right_err, head_err) if err is not None]
-        if errors:
-            msg = f"[EE error] {' | '.join(errors)}"
-            sys.stdout.write(f"\r{msg}\x1b[K")
-            sys.stdout.flush()
+        # if errors:
+        #     msg = f"[EE error] {' | '.join(errors)}"
+        #     sys.stdout.write(f"\r{msg}\x1b[K")
+        #     sys.stdout.flush()
 
         mujoco.mj_camlight(self.model, self.data)
         self.viewer.sync()
