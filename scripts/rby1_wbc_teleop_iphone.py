@@ -52,6 +52,11 @@ def main() -> None:
         action="store_true",
         help="Persist computed teleop trajectory as a dataset-style pickle under demo/.",
     )
+    parser.add_argument(
+        "--portrait",
+        action="store_true",
+        help="Apply portrait-mode rotation to incoming iPhone poses.",
+    )
     args = parser.parse_args()
 
     if args.headless:
@@ -60,10 +65,15 @@ def main() -> None:
     wbc = RBY1WBC()
     wbc.start()
     teleop = TeleopIphone(
-        wbc=wbc, host=args.host, port=args.port, save_trajectory=args.save
+        wbc=wbc,
+        host=args.host,
+        port=args.port,
+        save_trajectory=args.save,
+        use_portrait_mode=args.portrait,
     )
     if not teleop.initialize():
         raise RuntimeError("Teleoperation can not be initialized!")
+    teleop.start()
 
     gui: Optional[RBY1WBCTeleopIphone] = None
     try:
