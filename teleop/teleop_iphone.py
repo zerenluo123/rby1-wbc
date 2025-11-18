@@ -283,10 +283,12 @@ class TeleopIphone:
         if ready:
             self._ready_event.set()
             self._was_ready = True
+            self._ready_state_logged = False
         else:
             self._ready_event.clear()
-            if self._was_ready and self._fatal_error is None:
-                self._mark_fatal_error_locked("Device alignment lost or client disconnected.")
+            if self._was_ready and not self._ready_state_logged:
+                logging.warning("Device alignment lost or client disconnected; waiting for reconnection.")
+                self._ready_state_logged = True
 
     def _mark_fatal_error_locked(self, message: str) -> None:
         if self._fatal_error is None:
@@ -300,12 +302,13 @@ class TeleopIphone:
 
     def _diagnose_readiness_failure(self) -> str:
         reasons = []
-        for side in ("left", "right"):
-            sid = self._side_assignments[side]
-            if sid is None:
-                reasons.append(f"{side} device not connected")
-            elif not self._side_alignment[side]:
-                reasons.append(f"{side} device not aligned")
+        with self._pose_lock:
+            for side in ("left", "right"):
+                sid = self._side_assignments[side]
+                if sid is None:
+                    reasons.append(f"{side} device not connected")
+                elif not self._side_alignment[side]:
+                    reasons.append(f"{side} device not aligned")
         if not reasons:
             reasons.append("Unknown readiness failure")
         return "; ".join(reasons)
@@ -437,32 +440,25 @@ class TeleopIphone:
 
         left_transform = compute_transform("left")
         right_transform = compute_transform("right")
+        if left_transform is None:
+            left_transform = self._current_site_pose("left")
+        if right_transform is None:
+            right_transform = self._current_site_pose("right")
         if left_transform is None or right_transform is None:
-            if not self._ready_state_logged:
-                logging.info("Waiting for device transforms (left or right missing).")
-                self._ready_state_logged = True
+            logging.debug("Missing base robot state for %s; deferring target.", "left" if left_transform is None else "right")
             return None
-        self._ready_state_logged = False
 
-        head_transform = None
-        if "head" in latest and "head" in alignment:
-            head_transform = alignment["head"] @ latest["head"][1]
-        else:
-            head_transform = self._current_site_pose("head")
-
+        head_pos = head_quat = None
         left_pos, left_quat = _matrix_to_pose(left_transform)
         right_pos, right_quat = _matrix_to_pose(right_transform)
-        head_pos = head_quat = None
-        if head_transform is not None:
-            head_pos, head_quat = _matrix_to_pose(head_transform)
 
         targets = TeleopTargets(
             left_pos=left_pos,
             left_quat=left_quat,
             right_pos=right_pos,
             right_quat=right_quat,
-            left_width=widths.get("left", 0.0),
-            right_width=widths.get("right", 0.0),
+            left_width=widths.get("left", 0.1),
+            right_width=widths.get("right", 0.1),
             head_pos=head_pos,
             head_quat=head_quat,
         )
