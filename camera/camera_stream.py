@@ -1,0 +1,305 @@
+"""Camera streaming utilities backed by the Aravis GigE-Vision SDK.
+
+The RBY1 policy stack relies on five FLIR IP cameras (three mounted on the
+head, two on the wrists).  This module provides a small wrapper around the
+`Aravis <https://github.com/AravisProject/aravis>`_ bindings so that the latest
+RGB frames can be retrieved and marshalled into numpy arrays suitable for the
+policy server.
+
+The implementation is designed to be robust in simulation environments where
+the Aravis bindings might not be available.  When ``mock_mode=True`` the
+streamer simply produces placeholder images allowing the rest of the pipeline
+to be exercised without hardware.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass
+from typing import Deque, Dict, List, Mapping
+
+import numpy as np
+
+try:  # pragma: no cover - optional dependency
+    import gi
+
+    gi.require_version("Aravis", "0.8")
+    from gi.repository import Aravis
+except Exception:  # pragma: no cover - used in headless testing
+    Aravis = None  # type: ignore
+
+
+@dataclass(frozen=True)
+class CameraFrame:
+    """Container that stores a single RGB frame."""
+
+    timestamp: float
+    image: np.ndarray
+
+
+class AravisCameraStreamer:
+    """Stream and buffer frames from multiple GigE cameras.
+
+    Parameters
+    ----------
+    camera_map:
+        Mapping from observation key (e.g. ``"camera_left_main_rgb"``) to camera
+        serial number.  The observation key is later used when composing the
+        policy input dictionary.
+    buffer_size:
+        Maximum number of frames to retain per camera.
+    mock_mode:
+        When ``True`` the streamer generates placeholder images instead of
+        connecting to real hardware.  This is useful when unit testing the
+        policy pipeline without the cameras present.
+    mock_resolution:
+        Resolution of the synthetic frames used in ``mock_mode``.
+    """
+
+    def __init__(
+        self,
+        camera_map: Mapping[str, str],
+        buffer_size: int = 16,
+        *,
+        mock_mode: bool = False,
+        mock_resolution: tuple[int, int] = (720, 1280),
+    ) -> None:
+        if not camera_map:
+            raise ValueError("camera_map must contain at least one camera")
+        self._camera_map = dict(camera_map)
+        self._buffer_size = int(max(buffer_size, 1))
+        self._mock_mode = bool(mock_mode)
+        self._mock_resolution = mock_resolution
+
+        self._buffers: Dict[str, Deque[CameraFrame]] = {
+            key: deque(maxlen=self._buffer_size) for key in self._camera_map
+        }
+        self._buffers_lock = threading.Lock()
+
+        self._threads: List[threading.Thread] = []
+        self._stop = threading.Event()
+
+        self._streams: Dict[str, tuple] = {}
+
+        if Aravis is None and not self._mock_mode:  # pragma: no cover - env guard
+            raise ImportError(
+                "gi.repository.Aravis is required for camera streaming. "
+                "Install the Aravis Python bindings or enable mock_mode."
+            )
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+    def start(self) -> None:
+        if self._threads:
+            return
+        self._stop.clear()
+        if self._mock_mode:
+            for key in self._camera_map:
+                thread = threading.Thread(
+                    target=self._mock_worker,
+                    args=(key,),
+                    name=f"camera-mock-{key}",
+                    daemon=True,
+                )
+                thread.start()
+                self._threads.append(thread)
+            return
+
+        Aravis.update_device_list()
+        for obs_key, serial in self._camera_map.items():
+            camera = Aravis.Camera.new(serial)
+            if camera is None:  # pragma: no cover - depends on hardware
+                raise RuntimeError(f"Failed to create Aravis camera for serial {serial}")
+            stream = camera.create_stream(None, None)
+            payload = camera.get_payload()
+            for _ in range(4):
+                stream.push_buffer(Aravis.Buffer.new_allocate(payload))
+            camera.start_acquisition()
+            self._streams[obs_key] = (camera, stream)
+            thread = threading.Thread(
+                target=self._camera_worker,
+                args=(obs_key,),
+                name=f"camera-{serial}",
+                daemon=True,
+            )
+            thread.start()
+            self._threads.append(thread)
+
+    def stop(self) -> None:
+        self._stop.set()
+        for thread in self._threads:
+            thread.join(timeout=1.0)
+        self._threads.clear()
+
+        if not self._mock_mode:
+            for camera, stream in self._streams.values():  # pragma: no cover - hardware cleanup
+                try:
+                    camera.stop_acquisition()
+                finally:
+                    stop_fn = getattr(stream, "stop_acquisition", None)
+                    if stop_fn is not None:
+                        stop_fn()
+                    else:  # pragma: no cover - depends on Aravis version
+                        stop_fn = getattr(stream, "stop", None)
+                        if stop_fn is not None:
+                            stop_fn()
+            self._streams.clear()
+
+        with self._buffers_lock:
+            for buffer in self._buffers.values():
+                buffer.clear()
+
+    # ------------------------------------------------------------------
+    # Workers
+    # ------------------------------------------------------------------
+    def _mock_worker(self, obs_key: str) -> None:
+        height, width = self._mock_resolution
+        colour = np.random.randint(0, 255, size=(1, 1, 3), dtype=np.uint8)
+        while not self._stop.is_set():
+            image = np.tile(colour, (height, width, 1))
+            frame = CameraFrame(timestamp=time.monotonic(), image=image)
+            with self._buffers_lock:
+                self._buffers[obs_key].append(frame)
+            time.sleep(1 / 30.0)
+
+    def _camera_worker(self, obs_key: str) -> None:  # pragma: no cover - hardware
+        camera, stream = self._streams[obs_key]
+        width = camera.get_integer("Width")
+        height = camera.get_integer("Height")
+        if hasattr(camera, "get_pixel_format_string"):
+            pixel_format = camera.get_pixel_format_string()  # type: ignore[attr-defined]
+        else:  # pragma: no cover - older/newer bindings
+            pixel_format = camera.get_pixel_format_as_string()
+
+        timeout_ns = 1_000_000  # 1 ms
+        if hasattr(stream, "timeout"):  # pragma: no cover - depends on bindings
+            try:
+                setattr(stream, "timeout", max(int(timeout_ns // 1000), 1))
+            except Exception:
+                pass
+        supports_timeout = True
+
+        while not self._stop.is_set():
+            if supports_timeout:
+                try:
+                    buffer = stream.pop_buffer(timeout_ns)
+                except TypeError:
+                    supports_timeout = False
+                    continue
+            if not supports_timeout:
+                buffer = stream.pop_buffer()
+            if buffer is None:
+                continue
+            try:
+                data = buffer.get_data()
+                np_image = self._decode_buffer(data, width, height, pixel_format)
+                timestamp = buffer.get_timestamp() * 1e-9
+                frame = CameraFrame(timestamp=timestamp, image=np_image)
+                with self._buffers_lock:
+                    self._buffers[obs_key].append(frame)
+            finally:
+                stream.push_buffer(buffer)
+
+    @staticmethod
+    def _decode_buffer(data: bytes, width: int, height: int, pixel_format: str) -> np.ndarray:
+        array = np.frombuffer(data, dtype=np.uint8)
+        fmt = pixel_format.upper()
+
+        if fmt.endswith("MONO8") or fmt == "MONO8":
+            array = array.reshape(height, width)
+            return np.repeat(array[..., None], 3, axis=-1)
+
+        if "BAYER" in fmt:
+            return AravisCameraStreamer._decode_bayer(array, width, height, fmt)
+
+        if array.size != height * width * 3:
+            raise ValueError(
+                f"Unsupported pixel format '{pixel_format}' with payload size {array.size}"
+            )
+        image = array.reshape(height, width, 3)
+        return image
+
+    @staticmethod
+    def _decode_bayer(data: np.ndarray, width: int, height: int, fmt: str) -> np.ndarray:
+        """Decode Bayer-pattern images using OpenCV when available."""
+
+        try:  # pragma: no cover - optional dependency
+            import cv2
+        except ImportError as exc:
+            raise ValueError(
+                f"Pixel format '{fmt}' requires OpenCV for debayering. Install opencv-python."
+            ) from exc
+
+        bayer = data.reshape(height, width)
+        conversion_map = {
+            "RG8": cv2.COLOR_BayerRG2BGR,
+            "RG16": cv2.COLOR_BayerRG2BGR,
+            "BG8": cv2.COLOR_BayerBG2BGR,
+            "BG16": cv2.COLOR_BayerBG2BGR,
+            "GB8": cv2.COLOR_BayerGB2BGR,
+            "GB16": cv2.COLOR_BayerGB2BGR,
+            "GR8": cv2.COLOR_BayerGR2BGR,
+            "GR16": cv2.COLOR_BayerGR2BGR,
+        }
+
+        normalized = fmt.upper()
+        if not normalized.startswith("BAYER"):
+            raise ValueError(f"Unsupported Bayer pixel format '{fmt}'")
+        suffix = normalized[len("BAYER") :]
+        suffix = suffix.replace("_", "").replace("-", "")
+        conversion = conversion_map.get(suffix)
+        if conversion is None:
+            raise ValueError(f"Unsupported Bayer pixel format '{fmt}'")
+        bgr = cv2.cvtColor(bayer, conversion)
+        rgb = bgr[..., ::-1]
+        return rgb
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    def wait_until_ready(self, min_frames: int = 1, timeout: float = 2.0) -> None:
+        """Block until each camera buffer contains ``min_frames`` entries."""
+
+        min_frames = int(max(min_frames, 1))
+        deadline = time.monotonic() + max(timeout, 0.0)
+        while time.monotonic() <= deadline:
+            with self._buffers_lock:
+                if all(len(buffer) >= min_frames for buffer in self._buffers.values()):
+                    return
+            time.sleep(0.01)
+        raise TimeoutError("Timed out waiting for camera frames")
+
+    def get_observation_window(
+        self,
+        horizon: int,
+        stride: int = 1,
+    ) -> Dict[str, np.ndarray]:
+        """Return stacked image observations.
+
+        The returned dictionary maps observation keys (as passed in the
+        constructor) to arrays with shape ``(T, H, W, 3)`` where ``T`` equals the
+        requested horizon.  If insufficient frames are available the oldest frame
+        is repeated.
+        """
+
+        horizon = int(max(horizon, 1))
+        stride = int(max(stride, 1))
+
+        with self._buffers_lock:
+            buffers_copy = {k: list(v) for k, v in self._buffers.items()}
+
+        observations: Dict[str, np.ndarray] = {}
+        for key, frames in buffers_copy.items():
+            if not frames:
+                raise RuntimeError(f"No frames available for camera '{key}'")
+            selected: List[CameraFrame] = frames[-horizon * stride :: stride]
+            if len(selected) < horizon:
+                selected = [selected[0]] * (horizon - len(selected)) + selected
+            observations[key] = np.stack([frame.image for frame in selected], axis=0)
+        return observations
+
+
+__all__ = ["AravisCameraStreamer", "CameraFrame"]
