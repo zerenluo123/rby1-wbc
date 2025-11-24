@@ -40,11 +40,11 @@ except Exception:  # pragma: no cover - headless/CI environments
 # Default serial-to-observation mapping for the five RBY1 cameras.  Override on
 # the command line with ``--camera <name>=<serial>`` if the wiring differs.
 DEFAULT_CAMERA_SERIAL_MAP: Mapping[str, str] = {
-    "camera_head_ultrawide_rgb": "BFS_25260985",
-    "camera_head_main_rgb": "BFS_24260092",
-    "camera_head_main_right_rgb": "BFS_25260989",
-    "camera_left_main_rgb": "BFS_24260091",
-    "camera_right_main_rgb": "BFS_25272263",
+    # "camera_head_main_rgb": "FLIR-Blackfly S BFS-PGE-50S5C-25260985",
+    # "camera_head_main_right_rgb": "FLIR-Blackfly S BFS-PGE-50S5C-25272263",
+    # "camera_head_ultrawide_rgb": "FLIR-Blackfly S BFS-PGE-50S5C-25260989",
+    "camera_left_main_rgb": "FLIR-Blackfly S BFS-PGE-23S3C-24260091",
+    "camera_right_main_rgb": "FLIR-Blackfly S BFS-PGE-23S3C-24260092",
 }
 
 
@@ -96,12 +96,20 @@ def _print_startup_help(camera_map: Mapping[str, str], exc: Exception) -> None:
         )
 
 
+def _compute_display_scale(height: int, base_scale: float | None, max_height: int | None) -> float:
+    """Determine the display scale for an image with the given height."""
+
+    scale = base_scale if base_scale is not None else 1.0
+    if max_height is not None and max_height > 0 and height > max_height:
+        auto_scale = max_height / float(height)
+        scale = min(scale, auto_scale) if base_scale is not None else auto_scale
+    return max(scale, 1e-3)
+
+
 def _resize_frame(image: np.ndarray, scale: float) -> np.ndarray:
     """Resize frames for display while handling environments without OpenCV."""
 
     scale = float(scale)
-    if scale <= 0:
-        raise ValueError("Display scale must be positive")
     if abs(scale - 1.0) < 1e-3:
         return image
 
@@ -143,14 +151,21 @@ class _BaseViewer:
 
 
 class _OpenCVViewer(_BaseViewer):
-    def __init__(self, refresh_hz: float, scale: float = 1.0) -> None:
+    def __init__(
+        self,
+        refresh_hz: float,
+        *,
+        scale: float | None,
+        max_height: int | None,
+    ) -> None:
         try:
             import cv2
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise RuntimeError("OpenCV is not available. Install opencv-python to use this backend.") from exc
 
         self._cv2 = cv2
-        self._scale = max(scale, 1e-3)
+        self._base_scale = scale
+        self._max_height = max_height
         self._wait_ms = max(int(1000.0 / max(refresh_hz, 1e-3)), 1)
 
     def update(self, frames: Mapping[str, np.ndarray]) -> bool:
@@ -158,9 +173,10 @@ class _OpenCVViewer(_BaseViewer):
             image = rgb_image
             if image.ndim == 2:
                 image = np.repeat(image[..., None], 3, axis=-1)
-            image = _resize_frame(image, self._scale)
-            bgr = self._cv2.cvtColor(image, self._cv2.COLOR_RGB2BGR)
-            self._cv2.imshow(window, bgr)
+            scale = _compute_display_scale(image.shape[0], self._base_scale, self._max_height)
+            image = _resize_frame(image, scale)
+            # bgr = self._cv2.cvtColor(image, self._cv2.COLOR_RGB2BGR)
+            self._cv2.imshow(window, image)
         key = self._cv2.waitKey(self._wait_ms) & 0xFF
         return key not in (27, ord("q"))  # ESC or q closes the viewer
 
@@ -169,7 +185,14 @@ class _OpenCVViewer(_BaseViewer):
 
 
 class _MatplotlibViewer(_BaseViewer):
-    def __init__(self, camera_keys: Sequence[str], refresh_hz: float, scale: float) -> None:
+    def __init__(
+        self,
+        camera_keys: Sequence[str],
+        refresh_hz: float,
+        *,
+        scale: float | None,
+        max_height: int | None,
+    ) -> None:
         try:
             import matplotlib.pyplot as plt
         except ImportError as exc:  # pragma: no cover - optional dependency
@@ -187,7 +210,8 @@ class _MatplotlibViewer(_BaseViewer):
         self._axes = axes
         self._camera_keys = list(camera_keys)
         self._pause_dt = 1.0 / max(refresh_hz, 1e-3)
-        self._scale = float(scale)
+        self._base_scale = scale
+        self._max_height = max_height
         blank = np.zeros((10, 10, 3), dtype=np.uint8)
         idx = 0
         for r in range(rows):
@@ -207,7 +231,8 @@ class _MatplotlibViewer(_BaseViewer):
         for key, image in frames.items():
             if key not in self._images:
                 continue
-            image = _resize_frame(image, self._scale)
+            scale = _compute_display_scale(image.shape[0], self._base_scale, self._max_height)
+            image = _resize_frame(image, scale)
             self._images[key].set_data(image)
         self._fig.canvas.draw_idle()
         self._plt.pause(self._pause_dt)
@@ -221,18 +246,41 @@ def _build_viewer(
     backend: str,
     camera_keys: Sequence[str],
     refresh_hz: float,
-    scale: float,
+    *,
+    scale: float | None,
+    max_height: int | None,
 ) -> _BaseViewer:
     backend = backend.lower()
     if backend == "opencv":
-        return _OpenCVViewer(refresh_hz=refresh_hz, scale=scale)
+        return _OpenCVViewer(refresh_hz=refresh_hz, scale=scale, max_height=max_height)
     if backend == "matplotlib":
-        return _MatplotlibViewer(camera_keys=camera_keys, refresh_hz=refresh_hz, scale=scale)
-    # Auto: prefer OpenCV but fall back when unavailable.
+        return _MatplotlibViewer(
+            camera_keys=camera_keys,
+            refresh_hz=refresh_hz,
+            scale=scale,
+            max_height=max_height,
+        )
     try:
-        return _OpenCVViewer(refresh_hz=refresh_hz, scale=scale)
+        return _OpenCVViewer(refresh_hz=refresh_hz, scale=scale, max_height=max_height)
     except RuntimeError:
-        return _MatplotlibViewer(camera_keys=camera_keys, refresh_hz=refresh_hz)
+        return _MatplotlibViewer(
+            camera_keys=camera_keys,
+            refresh_hz=refresh_hz,
+            scale=scale,
+            max_height=max_height,
+        )
+
+
+def _log_camera_shapes(streamer: AravisCameraStreamer) -> None:
+    try:
+        window = streamer.get_observation_window(horizon=1)
+    except Exception as exc:
+        print(f"[camera] Unable to inspect frame shapes: {exc}", file=sys.stderr)
+        return
+    for key, frames in window.items():
+        frame = frames[-1]
+        height, width = frame.shape[:2]
+        print(f"[camera] {key}: {width}x{height}")
 
 
 def main() -> None:
@@ -263,8 +311,14 @@ def main() -> None:
     parser.add_argument(
         "--scale",
         type=float,
-        default=0.5,
-        help="Display scaling factor applied before rendering (default: 0.5). Use 1.0 for native resolution.",
+        default=None,
+        help="Fixed display scaling factor. Leave unset to auto-scale based on --max-height.",
+    )
+    parser.add_argument(
+        "--max-height",
+        type=int,
+        default=800,
+        help="Automatically downscale frames so their height does not exceed this value (0 disables).",
     )
     parser.add_argument(
         "--mock",
@@ -334,11 +388,15 @@ def main() -> None:
     except TimeoutError as exc:
         print(f"[camera] Warning: {exc}. Continuing anyway.", file=sys.stderr)
 
+    _log_camera_shapes(camera_streamer)
+
+    viewer: _BaseViewer | None = None
     viewer = _build_viewer(
         backend=args.backend,
         camera_keys=list(camera_map.keys()),
         refresh_hz=args.refresh_hz,
         scale=args.scale,
+        max_height=args.max_height,
     )
 
     refresh_dt = 1.0 / max(args.refresh_hz, 1e-3)
@@ -355,7 +413,8 @@ def main() -> None:
                 break
             time.sleep(refresh_dt)
     finally:
-        viewer.close()
+        if viewer is not None:
+            viewer.close()
         camera_streamer.stop()
 
 

@@ -3,26 +3,33 @@
 from __future__ import annotations
 
 import argparse
-import heapq
-import itertools
+import queue
+import sys
 import threading
 import time
-from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Tuple
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import zmq
+from scipy.spatial.transform import Rotation
 
-from control.camera_stream import AravisCameraStreamer
-from control.policy_robot import RBY1PolicyRobot
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+PROJECT_ROOT = str(PROJECT_ROOT)
+
+from camera.camera_stream import AravisCameraStreamer
+from control.rby1_realtime import RBY1PolicyRobot
 
 
 CAMERA_SERIAL_TO_KEY = {
-    "BFS_25037059": "camera_head_ultrawide_rgb",
-    "BFS_25037058": "camera_head_main_rgb",
-    "BFS_25037070": "camera_head_main_right_rgb",
-    "BFS_24017452": "camera_left_main_rgb",
-    "BFS_24293899": "camera_right_main_rgb",
+    # "camera_head_main_rgb": "FLIR-Blackfly S BFS-PGE-50S5C-25260985",
+    # "camera_head_main_right_rgb": "FLIR-Blackfly S BFS-PGE-50S5C-25272263",
+    # "camera_head_ultrawide_rgb": "FLIR-Blackfly S BFS-PGE-50S5C-25260989",
+    "camera_left_main_rgb": "FLIR-Blackfly S BFS-PGE-23S3C-24260091",
+    "camera_right_main_rgb": "FLIR-Blackfly S BFS-PGE-23S3C-24260092",
 }
 
 
@@ -35,40 +42,94 @@ class ScheduledAction:
     payload: Dict[str, np.ndarray]
 
 
-class ActionScheduler:
-    """Thread-safe priority queue that orders actions by timestamp."""
+@dataclass
+class DebugActionRequest:
+    actions: Sequence[ScheduledAction]
+    decision_event: threading.Event = field(default_factory=threading.Event)
+    approved: bool = False
+    current_pose: Optional[Dict[str, np.ndarray]] = None
+    image_obs: Optional[Dict[str, np.ndarray]] = None
 
-    def __init__(self) -> None:
-        self._heap: List[Tuple[float, int, ScheduledAction]] = []
-        self._counter = itertools.count()
-        self._condition = threading.Condition()
+    def resolve(self, decision: bool) -> None:
+        self.approved = decision
+        self.decision_event.set()
 
-    def add_actions(self, actions: Iterable[ScheduledAction]) -> None:
-        with self._condition:
-            for action in actions:
-                if not np.isfinite(action.timestamp):
-                    continue
-                entry = (float(action.timestamp), next(self._counter), action)
-                heapq.heappush(self._heap, entry)
-            if self._heap:
-                self._condition.notify_all()
 
-    def pop_ready(self, now: float) -> List[ScheduledAction]:
-        ready: List[ScheduledAction] = []
-        with self._condition:
-            while self._heap and self._heap[0][0] <= now:
-                _, _, action = heapq.heappop(self._heap)
-                ready.append(action)
-        return ready
+def _rpy_to_matrix(rpy: Sequence[float]) -> np.ndarray:
+    return Rotation.from_euler("xyz", np.asarray(rpy, dtype=float)).as_matrix()
 
-    def peek_timestamp(self) -> Optional[float]:
-        with self._condition:
-            return float(self._heap[0][0]) if self._heap else None
 
-    def wait(self, timeout: Optional[float]) -> None:
-        with self._condition:
-            self._condition.wait(timeout=timeout)
+def _make_transform(rotation_rpy: Sequence[float], translation: Sequence[float]) -> np.ndarray:
+    mat = np.eye(4, dtype=float)
+    mat[:3, :3] = _rpy_to_matrix(rotation_rpy)
+    mat[:3, 3] = np.asarray(translation, dtype=float)
+    return mat
 
+
+MODEL_TO_TCP_FRAME = {
+    "left": _make_transform([np.pi, 0.0, 0.0], [0.0, 0.0, -0.2]),
+    "right": _make_transform([0.0, np.pi, 0.0], [0.0, 0.0, -0.2]),
+    "head": _make_transform([-np.pi / 2.0, 0.0, -np.pi / 2.0], [0.04, 0.0, 0.0601]),
+}
+TCP_TO_MODEL_FRAME = {name: np.linalg.inv(mat) for name, mat in MODEL_TO_TCP_FRAME.items()}
+
+OBS_TF_KEYS = {
+    "left": "gripper_left_tf",
+    "right": "gripper_right_tf",
+    "head": "head_tf",
+}
+PAYLOAD_TF_KEYS = {
+    "left": "left_tf",
+    "right": "right_tf",
+    "head": "head_tf",
+}
+GRIPPER_WIDTH_LIMITS = (0.0, 0.085)
+
+
+def _apply_transform_tf(tf: np.ndarray, transform: np.ndarray) -> np.ndarray:
+    return tf @ transform
+
+
+def _convert_robot_observations(
+    robot_obs: Dict[str, np.ndarray],
+    transform_map: Dict[str, np.ndarray],
+) -> Dict[str, np.ndarray]:
+    converted: Dict[str, np.ndarray] = {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in robot_obs.items()}
+    for effector, key in OBS_TF_KEYS.items():
+        if key not in robot_obs or effector not in transform_map:
+            continue
+        print("Applying observation model to TCP frame transform for", effector)
+        converted[key] = _apply_transform_tf(robot_obs[key], transform_map[effector])
+    return converted
+
+
+def _offset_gripper_obs(
+    obs: Dict[str, np.ndarray],
+    offset: float,
+) -> Dict[str, np.ndarray]:
+    if offset == 0.0:
+        return obs
+    adjusted = dict(obs)
+    for key in ("gripper_left_gripper_width", "gripper_right_gripper_width"):
+        if key in adjusted:
+            adjusted[key] = np.asarray(adjusted[key], dtype=float) + offset
+    return adjusted
+
+
+def _offset_gripper_action(
+    payload: Dict[str, np.ndarray],
+    offset: float,
+) -> Dict[str, np.ndarray]:
+    adjusted = dict(payload)
+    if "left_gripper_width" in adjusted:
+        adjusted["left_gripper_width"] = float(
+            np.clip(adjusted["left_gripper_width"] - offset, GRIPPER_WIDTH_LIMITS[0], GRIPPER_WIDTH_LIMITS[1])
+        )
+    if "right_gripper_width" in adjusted:
+        adjusted["right_gripper_width"] = float(
+            np.clip(adjusted["right_gripper_width"] - offset, GRIPPER_WIDTH_LIMITS[0], GRIPPER_WIDTH_LIMITS[1])
+        )
+    return adjusted
 
 class PolicyClient:
     """Thin ZMQ wrapper that talks to the detached policy server."""
@@ -98,65 +159,45 @@ class PolicyClient:
         try:
             self._socket.send_pyobj(obs)
             return self._socket.recv_pyobj()
-        except zmq.Again:
+        except (zmq.Again, zmq.ZMQError):
             return None
 
 
-def decode_action_vector(
-    action_vec: np.ndarray,
-    indexing: Dict[str, Tuple[int, int]],
-) -> Dict[str, np.ndarray]:
-    """Convert a flat action vector to structured pose commands."""
-
-    action_vec = np.asarray(action_vec, dtype=float)
-
-    def _slice(name: str) -> np.ndarray:
-        if name not in indexing:
-            raise KeyError(f"Action indexing missing key '{name}'")
-        start, end = indexing[name]
-        return action_vec[start:end]
-
-    action: Dict[str, np.ndarray] = {
-        "left_pos": _slice("gripper_left_eef_pos"),
-        "left_rot_axis_angle": _slice("gripper_left_eef_rot_axis_angle"),
-        "right_pos": _slice("gripper_right_eef_pos"),
-        "right_rot_axis_angle": _slice("gripper_right_eef_rot_axis_angle"),
-    }
-    if "head_eef_pos" in indexing and "head_eef_rot_axis_angle" in indexing:
-        action["head_pos"] = _slice("head_eef_pos")
-        action["head_rot_axis_angle"] = _slice("head_eef_rot_axis_angle")
-    if "gripper_left_gripper_width" in indexing:
-        action["left_gripper_width"] = float(_slice("gripper_left_gripper_width")[0])
-    if "gripper_right_gripper_width" in indexing:
-        action["right_gripper_width"] = float(_slice("gripper_right_gripper_width")[0])
-    return action
-
-
 def build_scheduled_actions(
-    actions: np.ndarray,
+    actions_tf: Dict[str, np.ndarray],
     timestamps: np.ndarray,
-    indexing: Dict[str, Tuple[int, int]],
     fallback_dt: float,
     now: float,
 ) -> List[ScheduledAction]:
-    actions = np.asarray(actions, dtype=float)
-    if actions.ndim == 1:
-        actions = actions[None, :]
+    if not actions_tf:
+        return []
 
-    scheduled: List[ScheduledAction] = []
-    if actions.size == 0:
-        return scheduled
-
-    if timestamps.size == 0:
-        timestamps = now + fallback_dt * (np.arange(len(actions), dtype=float) + 1.0)
+    length = max(arr.shape[0] for arr in actions_tf.values() if arr is not None)
+    if length == 0:
+        return []
 
     timestamps = np.asarray(timestamps, dtype=float)
-    for idx, vector in enumerate(actions):
-        try:
-            payload = decode_action_vector(vector, indexing)
-        except KeyError as exc:
-            print(f"[policy] {exc}")
-            continue
+    if timestamps.size == 0:
+        timestamps = now + fallback_dt * (np.arange(length, dtype=float) + 1.0)
+
+    scheduled: List[ScheduledAction] = []
+    for idx in range(length):
+        payload: Dict[str, np.ndarray] = {}
+        for effector, obs_key in OBS_TF_KEYS.items():
+            if obs_key not in actions_tf:
+                continue
+            tf_series = np.asarray(actions_tf[obs_key], dtype=float)
+            if idx >= tf_series.shape[0]:
+                continue
+            payload[PAYLOAD_TF_KEYS[effector]] = tf_series[idx]
+        if "gripper_left_gripper_width" in actions_tf:
+            payload["left_gripper_width"] = float(actions_tf["gripper_left_gripper_width"][idx].reshape(-1)[0])
+        if "gripper_right_gripper_width" in actions_tf:
+            payload["right_gripper_width"] = float(actions_tf["gripper_right_gripper_width"][idx].reshape(-1)[0])
+
+        for effector, key in PAYLOAD_TF_KEYS.items():
+            if key in payload and effector in TCP_TO_MODEL_FRAME:
+                payload[key] = _apply_transform_tf(payload[key], TCP_TO_MODEL_FRAME[effector])
 
         timestamp = float(timestamps[min(idx, len(timestamps) - 1)])
         if not np.isfinite(timestamp):
@@ -174,39 +215,347 @@ def build_scheduled_actions(
 
     return scheduled
 
+def _plot_action_chunk(
+    actions: Sequence[ScheduledAction],
+    current_pose: Optional[Dict[str, np.ndarray]] = None,
+) -> Optional[Callable[[], None]]:
+    """Visualize scheduled actions. Returns a cleanup callback if plotting succeeded."""
+
+    try:
+        import matplotlib.pyplot as plt  # type: ignore
+        from matplotlib import cm as _cm
+        from matplotlib import colors as _colors
+        from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  # Needed for 3D projection registration
+    except Exception as exc:  # pragma: no cover - debug-only helper
+        print(f"[debug] Unable to plot actions (matplotlib missing?): {exc}")
+        return None
+
+    if not actions:
+        return None
+
+    timestamps = np.array([action.timestamp for action in actions], dtype=float)
+    rel_time = timestamps - timestamps[0]
+
+    end_effector_keys = {
+        "left": "left_tf",
+        "right": "right_tf",
+        "head": "head_tf",
+    }
+    ee_trajectories: Dict[str, np.ndarray] = {}
+    ee_orientations: Dict[str, np.ndarray] = {}
+    for name, payload_key in end_effector_keys.items():
+        coords: List[np.ndarray] = []
+        rots: List[np.ndarray] = []
+        for action in actions:
+            payload = action.payload
+            if payload_key not in payload:
+                coords = []
+                break
+            tf = np.asarray(payload[payload_key], dtype=float).reshape(4, 4)
+            coords.append(tf[:3, 3])
+            rots.append(Rotation.from_matrix(tf[:3, :3]).as_rotvec())
+        if coords:
+            ee_trajectories[name] = np.vstack(coords)
+            ee_orientations[name] = np.vstack(rots)
+
+    other_keys = sorted({key for action in actions for key in action.payload})
+    excluded_keys = set(end_effector_keys.values())
+    excluded_keys.update([f"{name}_rot_axis_angle" for name in end_effector_keys])
+    plot_data: List[Tuple[str, np.ndarray]] = []
+    for key in other_keys:
+        if key in excluded_keys:
+            continue
+        values: List[np.ndarray] = []
+        for action in actions:
+            payload = action.payload
+            if key not in payload:
+                break
+            value = np.asarray(payload[key], dtype=float).reshape(-1)
+            values.append(value)
+        else:
+            stacked = np.vstack(values)
+            if stacked.ndim == 1:
+                stacked = stacked[:, None]
+            plot_data.append((key, stacked))
+
+    def _set_axes_equal(ax):
+        limits = np.array([ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()])
+        centers = np.mean(limits, axis=1)
+        radius = 0.5 * np.max(limits[:, 1] - limits[:, 0])
+        for center, setter in zip(centers, [ax.set_xlim3d, ax.set_ylim3d, ax.set_zlim3d]):
+            setter(center - radius, center + radius)
+
+
+    figures: List[plt.Figure] = []
+    if ee_trajectories:
+        fig = plt.figure(figsize=(8, 6))
+        ax = fig.add_subplot(111, projection="3d")
+        cmap_cycle = ["Reds", "Blues", "Greens", "Purples", "Oranges", "Greys"]
+        for idx, (name, trajectory) in enumerate(ee_trajectories.items()):
+            cmap = _cm.get_cmap(cmap_cycle[idx % len(cmap_cycle)])
+            norm = _colors.Normalize(vmin=0, vmax=max(len(trajectory) - 1, 1))
+            # Plot gradient scatter along the trajectory.
+            for step, pos in enumerate(trajectory):
+                color = cmap(norm(step))
+                ax.scatter(pos[0], pos[1], pos[2], color=color, s=40)
+                rot_samples = ee_orientations.get(name)
+                if rot_samples is not None and step < len(rot_samples):
+                    orientation = Rotation.from_rotvec(rot_samples[step])
+                    axes_dirs = orientation.apply(np.eye(3))
+                    axis_colors = ["r", "g", "b"]
+                    axis_scale = 0.05
+                    for axis_vec, axis_color in zip(axes_dirs, axis_colors):
+                        direction = axis_vec * axis_scale
+                        ax.quiver(
+                            pos[0],
+                            pos[1],
+                            pos[2],
+                            direction[0],
+                            direction[1],
+                            direction[2],
+                            color=axis_color,
+                            length=0.3,
+                            normalize=False,
+                            arrow_length_ratio=0.2,
+                        )
+            ax.plot(
+                trajectory[:, 0],
+                trajectory[:, 1],
+                trajectory[:, 2],
+                color=cmap(0.6),
+                alpha=0.6,
+                label=f"{name} traj",
+            )
+            if current_pose and name in current_pose:
+                cur_tf = np.asarray(current_pose[name], dtype=float).reshape(4, 4)
+                cur = cur_tf[:3, 3]
+                ax.scatter(
+                    cur[0],
+                    cur[1],
+                    cur[2],
+                    color=cmap(1.0),
+                    s=80,
+                    marker="X",
+                    label=f"{name} current",
+                )
+                cur_axes = Rotation.from_matrix(cur_tf[:3, :3]).apply(np.eye(3))
+                axis_scale = 0.06
+                for axis_vec, axis_color in zip(cur_axes, ["r", "g", "b"]):
+                    vec = axis_vec * axis_scale
+                    ax.quiver(
+                        cur[0],
+                        cur[1],
+                        cur[2],
+                        vec[0],
+                        vec[1],
+                        vec[2],
+                        color=axis_color,
+                        length=0.3,
+                        normalize=False,
+                        arrow_length_ratio=0.2,
+                    )
+            ax.text(
+                trajectory[-1, 0],
+                trajectory[-1, 1],
+                trajectory[-1, 2],
+                f"{name} end",
+                color="black",
+                fontsize=8,
+            )
+        ax.set_title("Predicted gripper trajectories")
+        ax.set_xlabel("X (m)")
+        ax.set_ylabel("Y (m)")
+        ax.set_zlabel("Z (m)")
+        ax.legend(loc="best")
+        _set_axes_equal(ax)
+        figures.append(fig)
+
+    if not figures:
+        return None
+
+    plt.show(block=False)
+    plt.pause(0.01)
+
+    def _cleanup() -> None:
+        for figure in figures:
+            plt.close(figure)
+
+    return _cleanup
+
+
+def _plot_image_observations(
+    image_obs: Optional[Dict[str, np.ndarray]],
+    bgr_to_rgb: bool = True,
+) -> Optional[Callable[[], None]]:
+    if not image_obs:
+        return None
+    try:
+        import matplotlib.pyplot as plt  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        print(f"[debug] Unable to plot image observations: {exc}")
+        return None
+
+    keys = list(image_obs.keys())
+    if not keys:
+        return None
+
+    num = len(keys)
+    cols = min(3, num)
+    rows = int(np.ceil(num / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 3 * rows))
+    axes = np.atleast_1d(axes).reshape(rows, cols)
+
+    for ax in axes.flat:
+        ax.axis("off")
+
+    for idx, key in enumerate(keys):
+        ax = axes[idx // cols, idx % cols]
+        frames = np.asarray(image_obs[key])
+        frame = frames[-1]
+        if bgr_to_rgb and frame.ndim == 3 and frame.shape[-1] == 3:
+            frame = frame[..., ::-1]
+        if frame.ndim == 3 and frame.shape[-1] in (1, 3):
+            if frame.dtype != np.uint8:
+                frame = np.clip(frame, 0.0, 1.0)
+            if frame.shape[-1] == 1:
+                ax.imshow(frame[..., 0], cmap="gray")
+            else:
+                ax.imshow(frame)
+        else:
+            ax.imshow(frame, cmap="gray")
+        ax.set_title(key)
+        ax.axis("off")
+
+    plt.tight_layout()
+    plt.show(block=False)
+    plt.pause(0.01)
+
+    def _cleanup() -> None:
+        plt.close(fig)
+
+    return _cleanup
+
+
+def _confirm_action_execution(
+    actions: Sequence[ScheduledAction],
+    current_pose: Optional[Dict[str, np.ndarray]] = None,
+    image_obs: Optional[Dict[str, np.ndarray]] = None,
+) -> bool:
+    """Ask the operator for approval before sending a batch of actions to the robot."""
+
+    cleanup_actions = _plot_action_chunk(actions, current_pose=current_pose)
+    cleanup_images = _plot_image_observations(image_obs)
+    plotted = cleanup_actions is not None or cleanup_images is not None
+    if not sys.stdin or not sys.stdin.isatty():
+        print("[debug] No interactive terminal available; skipping action execution.")
+        return False
+
+    prompt = "[debug] Execute plotted actions on the robot? [y/N]: " if plotted else (
+        "[debug] Execute actions on the robot? [y/N]: "
+    )
+    decision: Optional[bool] = None
+    try:
+        while decision is None:
+            try:
+                response = input(prompt)
+            except EOFError:
+                print("[debug] Input stream closed; skipping action execution.")
+                return False
+            normalized = response.strip().lower()
+            if not normalized:
+                decision = False
+            elif normalized in {"y", "yes"}:
+                decision = True
+            elif normalized in {"n", "no"}:
+                decision = False
+            else:
+                print("[debug] Please respond with 'y' or 'n'.")
+    finally:
+        if cleanup_actions is not None:
+            cleanup_actions()
+        if cleanup_images is not None:
+            cleanup_images()
+
+    return bool(decision)
+
+
+def _handle_debug_requests(action_queue: "queue.Queue[DebugActionRequest]") -> None:
+    while True:
+        try:
+            request = action_queue.get_nowait()
+        except queue.Empty:
+            break
+        try:
+            approved = _confirm_action_execution(
+                request.actions,
+                current_pose=request.current_pose,
+                image_obs=request.image_obs,
+            )
+        except BaseException:
+            request.resolve(False)
+            raise
+        else:
+            request.resolve(approved)
+
+
+def _reject_pending_debug_requests(action_queue: "queue.Queue[DebugActionRequest]") -> None:
+    while True:
+        try:
+            request = action_queue.get_nowait()
+        except queue.Empty:
+            break
+        request.resolve(False)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="RBY1 policy streaming bridge")
     parser.add_argument("--policy-ip", default="127.0.0.1")
     parser.add_argument("--policy-port", type=int, default=8766)
-    parser.add_argument("--wbc-config", default=None, help="Optional path to WBC YAML config")
     parser.add_argument("--robot-horizon", type=int, default=2)
-    parser.add_argument("--robot-stride", type=int, default=1)
+    parser.add_argument("--robot-stride", type=int, default=3)
     parser.add_argument("--camera-horizon", type=int, default=2)
-    parser.add_argument("--camera-stride", type=int, default=1)
+    parser.add_argument("--camera-stride", type=int, default=3)
     parser.add_argument("--state-only", action="store_true", help="Skip camera streaming")
     parser.add_argument("--mock-cameras", action="store_true", help="Generate synthetic camera images")
-    parser.add_argument("--control-dt", type=float, default=0.1)
+    parser.add_argument("--control-dt", type=float, default=0.05)
+    parser.add_argument("--obs_frequency", type=float, default=60.0, help="Observation frequency in Hz")
     parser.add_argument("--policy-timeout", type=float, default=2.0, help="ZMQ request timeout in seconds")
-    parser.add_argument("--executor-lookahead", type=float, default=0.02, help="Execution loop lookahead in seconds")
+    parser.add_argument("--executor-lookahead", type=float, default=0.05, help="Execution loop lookahead in seconds")
+    parser.add_argument(
+        "--debug-actions",
+        action="store_true",
+        help="Plot action batches and require manual confirmation before execution.",
+    )
+    parser.add_argument("--align-first-action", action="store_true", help="Rigidly align each action chunk to the current robot pose before execution.")
+    parser.add_argument("--sim-only", action="store_true", help="Run without the realtime controller and preview actions in Mujoco.")
+    parser.add_argument("--sim-model", default=None, help="Optional custom MJCF path for --sim-only mode.")
+    parser.add_argument("--sim-viewer", action="store_true", help="Open a Mujoco viewer when using --sim-only.")
+    parser.add_argument("--gripper-width-offset", type=float, default=0.005, help="Additive offset applied to observed gripper widths (subtracted from executed commands).")
     args = parser.parse_args()
 
-    control_dt = max(args.control_dt, 1e-3)
-    robot = RBY1PolicyRobot(config_path=args.wbc_config)
+    control_dt = max(args.control_dt, 1e-2)
+    robot = RBY1PolicyRobot(
+        config_path=PROJECT_ROOT + "/config/wbc_policy.yaml",
+        use_sim=args.sim_only,
+        sim_model_path=args.sim_model,
+        sim_viewer=args.sim_viewer,
+    )
     robot.start()
     camera_streamer = None
     stop_event = threading.Event()
-    scheduler = ActionScheduler()
     threads: List[threading.Thread] = []
     policy_client: Optional[PolicyClient] = None
+    debug_request_queue: Optional["queue.Queue[DebugActionRequest]"] = (
+        queue.Queue() if args.debug_actions else None
+    )
 
     try:
         robot.wait_until_ready()
-        required_robot_samples = max(args.robot_horizon * args.robot_stride, 1)
-        if not robot.wait_for_observations(required_robot_samples, timeout=2.0):
+        required_robot_samples = max(int(args.robot_horizon * args.robot_stride / (robot.dt * args.obs_frequency)), 20)
+        if not robot.wait_for_observations(required_robot_samples, timeout=5.0):
             raise TimeoutError("Timed out waiting for initial robot observations")
 
-        if not args.state_only:
+        if not args.state_only and not args.sim_only:
             camera_streamer = AravisCameraStreamer(
                 CAMERA_SERIAL_TO_KEY,
                 buffer_size=max(args.camera_horizon * args.camera_stride, 4),
@@ -220,99 +569,127 @@ def main() -> None:
                 )
             except TimeoutError as exc:
                 print(f"[camera] {exc}")
+        elif args.sim_only and not args.state_only:
+            print("[camera] Skipping camera streamer in simulation mode.")
 
         policy_client = PolicyClient(
             ip=args.policy_ip,
             port=args.policy_port,
             timeout=args.policy_timeout,
         )
-        action_indexing = policy_client.request_action_indexing()
+        _ = policy_client.request_action_indexing()
 
         def inference_worker() -> None:
             while not stop_event.is_set():
                 start = time.monotonic()
                 try:
-                    robot_obs = robot.get_observation_window(
+                    robot_obs_model = robot.get_observation_window(
                         horizon=args.robot_horizon,
                         stride=args.robot_stride,
+                        obs_frequency=args.obs_frequency,
                     )
                 except Exception as exc:  # pragma: no cover - runtime safeguard
                     print(f"[robot] Failed to gather observation: {exc}")
                     if stop_event.wait(timeout=control_dt):
                         break
                     continue
+                policy_robot_obs = _convert_robot_observations(robot_obs_model, MODEL_TO_TCP_FRAME)
+                policy_robot_obs = _offset_gripper_obs(policy_robot_obs, args.gripper_width_offset)
+                obs_dict = {k: v for k, v in policy_robot_obs.items() if k != "timestamp"}
+                timestamps = robot_obs_model["timestamp"]
 
-                obs_dict = {k: v for k, v in robot_obs.items() if k != "timestamp"}
-                timestamps = robot_obs["timestamp"]
-
+                debug_images: Optional[Dict[str, np.ndarray]] = None
                 if camera_streamer is not None:
                     try:
                         camera_obs = camera_streamer.get_observation_window(
                             horizon=args.camera_horizon,
                             stride=args.camera_stride,
+                            obs_frequency=args.obs_frequency,
                         )
                         obs_dict.update(camera_obs)
+                        debug_images = {k: np.asarray(v).copy() for k, v in camera_obs.items()}
                     except RuntimeError as exc:
                         print(f"[camera] {exc}")
 
                 obs_dict["timestamp"] = timestamps
 
                 reply = policy_client.infer(obs_dict)
-                if reply is None or "actions" not in reply:
+                if reply is None or "actions_tf" not in reply:
                     print("[policy] Inference timeout or malformed reply")
                     if stop_event.wait(timeout=control_dt):
                         break
                     continue
 
-                actions = np.asarray(reply.get("actions"))
+                actions_tf = reply.get("actions_tf")
                 action_timestamps = np.asarray(reply.get("timestamps", []), dtype=float)
 
+                if not actions_tf:
+                    print("[policy] Missing actions in reply")
+                    if stop_event.wait(timeout=control_dt):
+                        break
+                    continue
+
                 scheduled_actions = build_scheduled_actions(
-                    actions=actions,
+                    actions_tf=actions_tf,
                     timestamps=action_timestamps,
-                    indexing=action_indexing,
                     fallback_dt=control_dt,
                     now=time.monotonic(),
                 )
                 if scheduled_actions:
-                    scheduler.add_actions(scheduled_actions)
+                    if args.debug_actions and debug_request_queue is not None:
+                        # Plot scheduled actions against the robot pose expressed
+                        # in the same (model) frame the controller uses.
+                        request = DebugActionRequest(
+                            actions=scheduled_actions,
+                            image_obs=debug_images,
+                        )
+                        debug_request_queue.put(request)
+                        while not stop_event.is_set():
+                            if request.decision_event.wait(timeout=0.1):
+                                break
+                        if not request.decision_event.is_set():
+                            continue
+                        if not request.approved:
+                            print("[debug] Action batch rejected; skipping execution.")
+                            continue
+
+                    lookahead = max(args.executor_lookahead, 0.0)
+                    min_start = time.monotonic() + lookahead
+                    earliest_ts = min(action.timestamp for action in scheduled_actions)
+                    if earliest_ts < min_start:
+                        shift = min_start - earliest_ts
+                        for action in scheduled_actions:
+                            action.timestamp += shift
+                        print(f"[policy] Shifted action batch forward by {shift:.3f}s to compensate latency.")
+
+                    for action in scheduled_actions:
+                        payload = _offset_gripper_action(action.payload, args.gripper_width_offset)
+                        robot.schedule_waypoint(
+                            payload=payload,
+                            timestamp=action.timestamp,
+                        )
 
                 elapsed = time.monotonic() - start
                 wait_time = max(0.0, control_dt - elapsed)
                 if stop_event.wait(timeout=wait_time):
                     break
 
-        def executor_worker() -> None:
-            lookahead = max(args.executor_lookahead, 0.0)
-            while not stop_event.is_set():
-                now = time.monotonic() + lookahead
-                ready = scheduler.pop_ready(now)
-                if ready:
-                    for scheduled_action in ready:
-                        robot.apply_action(
-                            scheduled_action.payload,
-                            duration=scheduled_action.duration,
-                            timestamp=scheduled_action.timestamp,
-                        )
-                    continue
-
-                next_ts = scheduler.peek_timestamp()
-                if next_ts is None:
-                    if stop_event.wait(timeout=control_dt):
-                        break
-                else:
-                    wait_time = max(0.0, next_ts - (time.monotonic() + lookahead))
-                    if stop_event.wait(timeout=wait_time):
-                        break
-
         threads.append(threading.Thread(target=inference_worker, name="policy-inference", daemon=True))
-        threads.append(threading.Thread(target=executor_worker, name="policy-executor", daemon=True))
 
         for thread in threads:
             thread.start()
 
-        while all(thread.is_alive() for thread in threads):
-            time.sleep(0.2)
+        try:
+            while True:
+                if debug_request_queue is not None:
+                    _handle_debug_requests(debug_request_queue)
+                if not all(thread.is_alive() for thread in threads):
+                    break
+                if stop_event.wait(timeout=0.1):
+                    break
+        finally:
+            if debug_request_queue is not None:
+                _reject_pending_debug_requests(debug_request_queue)
     except KeyboardInterrupt:
         print("[main] Interrupted, shutting down...")
     finally:

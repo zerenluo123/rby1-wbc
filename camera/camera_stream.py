@@ -14,11 +14,12 @@ to be exercised without hardware.
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Dict, List, Mapping
+from typing import Deque, Dict, List, Mapping, Optional
 
 import numpy as np
 
@@ -167,12 +168,12 @@ class AravisCameraStreamer:
 
     def _camera_worker(self, obs_key: str) -> None:  # pragma: no cover - hardware
         camera, stream = self._streams[obs_key]
-        width = camera.get_integer("Width")
-        height = camera.get_integer("Height")
+        default_width = camera.get_integer("Width")
+        default_height = camera.get_integer("Height")
         if hasattr(camera, "get_pixel_format_string"):
-            pixel_format = camera.get_pixel_format_string()  # type: ignore[attr-defined]
+            default_pixel_format = camera.get_pixel_format_string()  # type: ignore[attr-defined]
         else:  # pragma: no cover - older/newer bindings
-            pixel_format = camera.get_pixel_format_as_string()
+            default_pixel_format = camera.get_pixel_format_as_string()
 
         timeout_ns = 1_000_000  # 1 ms
         if hasattr(stream, "timeout"):  # pragma: no cover - depends on bindings
@@ -195,7 +196,20 @@ class AravisCameraStreamer:
                 continue
             try:
                 data = buffer.get_data()
-                np_image = self._decode_buffer(data, width, height, pixel_format)
+                expected_bytes = self._expected_payload_size(default_width, default_height, default_pixel_format)
+                payload = memoryview(data)
+                if len(payload) >= expected_bytes:
+                    payload = payload[:expected_bytes]
+                try:
+                    np_image = self._decode_buffer(
+                        payload,
+                        default_width,
+                        default_height,
+                        default_pixel_format,
+                    )
+                except ValueError as exc:
+                    print(f"[camera:{obs_key}] {exc}", file=sys.stderr)
+                    continue
                 timestamp = buffer.get_timestamp() * 1e-9
                 frame = CameraFrame(timestamp=timestamp, image=np_image)
                 with self._buffers_lock:
@@ -204,9 +218,16 @@ class AravisCameraStreamer:
                 stream.push_buffer(buffer)
 
     @staticmethod
-    def _decode_buffer(data: bytes, width: int, height: int, pixel_format: str) -> np.ndarray:
+    def _decode_buffer(data: memoryview | bytes, width: int, height: int, pixel_format: str) -> np.ndarray:
         array = np.frombuffer(data, dtype=np.uint8)
         fmt = pixel_format.upper()
+        expected = AravisCameraStreamer._expected_payload_size(width, height, fmt)
+        if array.size < expected:
+            raise ValueError(
+                f"Payload too small for format '{pixel_format}' ({array.size} bytes, expected {expected})"
+            )
+        if array.size > expected:
+            array = array[:expected]
 
         if fmt.endswith("MONO8") or fmt == "MONO8":
             array = array.reshape(height, width)
@@ -215,12 +236,17 @@ class AravisCameraStreamer:
         if "BAYER" in fmt:
             return AravisCameraStreamer._decode_bayer(array, width, height, fmt)
 
-        if array.size != height * width * 3:
-            raise ValueError(
-                f"Unsupported pixel format '{pixel_format}' with payload size {array.size}"
-            )
         image = array.reshape(height, width, 3)
         return image
+
+    @staticmethod
+    def _expected_payload_size(width: int, height: int, pixel_format: str) -> int:
+        fmt = pixel_format.upper()
+        if fmt.endswith("MONO8") or fmt == "MONO8":
+            return width * height
+        if "BAYER" in fmt:
+            return width * height
+        return width * height * 3
 
     @staticmethod
     def _decode_bayer(data: np.ndarray, width: int, height: int, fmt: str) -> np.ndarray:
@@ -276,6 +302,7 @@ class AravisCameraStreamer:
         self,
         horizon: int,
         stride: int = 1,
+        obs_frequency: Optional[float] = None,
     ) -> Dict[str, np.ndarray]:
         """Return stacked image observations.
 
@@ -295,9 +322,17 @@ class AravisCameraStreamer:
         for key, frames in buffers_copy.items():
             if not frames:
                 raise RuntimeError(f"No frames available for camera '{key}'")
-            selected: List[CameraFrame] = frames[-horizon * stride :: stride]
-            if len(selected) < horizon:
-                selected = [selected[0]] * (horizon - len(selected)) + selected
+            if obs_frequency is None or len(frames) < 2:
+                selected: List[CameraFrame] = frames[-horizon * stride :: stride]
+                if len(selected) < horizon:
+                    selected = [selected[0]] * (horizon - len(selected)) + selected
+            else:
+                latest_ts = frames[-1].timestamp
+                step = float(stride) / max(obs_frequency, 1e-6)
+                desired_ts = latest_ts - step * np.arange(horizon - 1, -1, -1, dtype=float)
+                frame_ts = np.array([frame.timestamp for frame in frames], dtype=float)
+                idx = np.abs(frame_ts[:, None] - desired_ts[None, :]).argmin(axis=0)
+                selected = [frames[i] for i in idx]
             observations[key] = np.stack([frame.image for frame in selected], axis=0)
         return observations
 

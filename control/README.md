@@ -5,11 +5,16 @@ to command the RBY1 robot at ~500 Hz. The controller is implemented entirely i
 C++, exposes a small C++ executable (`rby1_realtime_control_main`), and ships a
 `pybind11` module (`rby1_controller`) for direct consumption from Python.
 
+## Install rby1-sdk
+https://github.com/RainbowRobotics/rby1-sdk
+
+refer to RBY1_SDK_BUILD.md
+
 ## Building
 ```bash
 # Need to install rby1-sdk first
 mkdir -p build && cd build
-# You may need to adjust the directory with your address (/usr/local/)
+# You may need to adjust the directory with your address (/usr/local/) - if rby1-sdk is installed using sudo make install
 cmake .. \
   -DCMAKE_BUILD_TYPE=Debug \
   -Dpybind11_DIR="$(python -m pybind11 --cmakedir)" \
