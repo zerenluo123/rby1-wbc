@@ -25,7 +25,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from control.rby1_wbc import RBY1WBC
-from scripts.rby1_traj import load_trajectory
+from demo.trajectory_loader import load_trajectory
 
 
 def _quat_angle_error(target_quat: np.ndarray, actual_quat: np.ndarray) -> float:

@@ -1,20 +1,20 @@
 import copy
 import json
 import logging
-import pickle
 import socket
 import threading
 import time
 import subprocess
 import platform
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
 
 import mujoco
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
+from dem
+from .teleop_targets importo.trajectory_recorder import TrajectoryRecorder TeleopTargets
+from .session_logger import SessionLogger, generate_session_name
 from .vr_control_state import VRControlState
 
 
@@ -22,9 +22,6 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)-8s - %(message)s"
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-LOG_DIR = PROJECT_ROOT / "log"
-DEMO_DIR = PROJECT_ROOT / "demo"
 
 T_CONV = np.array(
     [
@@ -39,160 +36,6 @@ T_CONV = np.array(
 
 LOCAL_PORT = 5005
 META_QUEST_PORT = 6000
-
-
-class TeleopLogger:
-    """Thread-safe logger for controller samples and optional teleop trajectory dumps."""
-
-    def __init__(self, save_trajectory: bool) -> None:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        DEMO_DIR.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        self.session_name = f"teleop_{stamp}"
-        self._controller_path = LOG_DIR / f"{self.session_name}.jsonl"
-        self._timeout_path = LOG_DIR / f"{self.session_name}_timeouts.jsonl"
-        self._trajectory_path = (
-            DEMO_DIR / f"{self.session_name}.pkl" if save_trajectory else None
-        )
-        self._save_trajectory = save_trajectory
-        self._closed = False
-        self._lock = threading.Lock()
-        self._controller_samples: list[dict] = []
-        self._socket_timeouts: list[float] = []
-        self._target_timestamps: list[float] = []
-        self._target_data: dict[str, dict[str, list]] = {}
-
-    @staticmethod
-    def _sanitize_pose_entry(hand: dict) -> dict:
-        return {
-            "position": [float(x) for x in hand.get("position", [])],
-            "rotation": [float(x) for x in hand.get("rotation", [])],
-        }
-
-    @staticmethod
-    def _quat_wxyz_to_rotvec(quat: np.ndarray) -> np.ndarray:
-        quat = np.asarray(quat, dtype=float)
-        if quat.shape[-1] != 4 or np.linalg.norm(quat) < 1e-9:
-            return np.zeros(3, dtype=float)
-        quat_xyzw = np.array([quat[1], quat[2], quat[3], quat[0]], dtype=float)
-        return R.from_quat(quat_xyzw).as_rotvec()
-
-    def log_controller_state(self, controller_state: dict) -> None:
-        timestamp = float(time.time())
-        entry: dict[str, object] = {"timestamp": timestamp}
-        hands = controller_state.get("hands", {})
-        left = hands.get("left")
-        right = hands.get("right")
-        head = controller_state.get("head")
-        if left:
-            entry["left"] = self._sanitize_pose_entry(left)
-        if right:
-            entry["right"] = self._sanitize_pose_entry(right)
-        if head:
-            entry["head"] = self._sanitize_pose_entry(head)
-        with self._lock:
-            self._controller_samples.append(entry)
-
-    def log_socket_timeout(self) -> None:
-        with self._lock:
-            self._socket_timeouts.append(time.time())
-
-    def log_target(self, target: "TeleopTargets", timestamp: float) -> None:
-        with self._lock:
-            self._target_timestamps.append(timestamp)
-            self._append_target("left", target.left_pos, target.left_quat, target.left_width)
-            self._append_target("right", target.right_pos, target.right_quat, target.right_width)
-            self._append_target("head", target.head_pos, target.head_quat, None)
-
-    def _append_target(
-        self,
-        side: str,
-        position: Optional[np.ndarray],
-        quaternion_wxyz: Optional[np.ndarray],
-        gripper_width: Optional[float],
-    ) -> None:
-        if position is None or quaternion_wxyz is None:
-            return
-        data = self._target_data.setdefault(side, {"tcp_pose": [], "gripper_width": []})
-        rotvec = self._quat_wxyz_to_rotvec(quaternion_wxyz)
-        pose_sample = list(np.asarray(position, dtype=float)) + list(rotvec)
-        data["tcp_pose"].append(pose_sample)
-        width_value = 0.0 if gripper_width is None else float(gripper_width)
-        data["gripper_width"].append(width_value)
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        with self._lock:
-            controller_samples = list(self._controller_samples)
-            socket_timeouts = list(self._socket_timeouts)
-            target_timestamps = list(self._target_timestamps)
-            target_data = {k: {kk: list(vv) for kk, vv in v.items()} for k, v in self._target_data.items()}
-
-        timeout_entries = [{"timestamp": ts} for ts in socket_timeouts]
-        self._write_jsonl(self._controller_path, controller_samples)
-        self._write_jsonl(self._timeout_path, timeout_entries)
-        self._write_targets_pickle(target_data, target_timestamps)
-        self._closed = True
-
-    def _write_jsonl(self, path: Path, entries: list[dict]) -> None:
-        if not entries:
-            return
-        with path.open("w", encoding="utf-8") as fh:
-            for entry in entries:
-                fh.write(json.dumps(entry))
-                fh.write("\n")
-
-    def _write_targets_pickle(self, target_data: dict, target_timestamps: list[float]) -> None:
-        if (
-            not self._save_trajectory
-            or not target_timestamps
-            or self._trajectory_path is None
-        ):
-            return
-
-        def build_gripper_payload(side: str) -> list[dict]:
-            data = target_data.get(side)
-            if not data or not data["tcp_pose"]:
-                return []
-            tcp_pose = np.asarray(data["tcp_pose"], dtype=np.float32)
-            gripper_width = np.asarray(data["gripper_width"], dtype=np.float32)
-            demo_start = np.repeat(tcp_pose[[0]], tcp_pose.shape[0], axis=0)
-            demo_end = np.repeat(tcp_pose[[-1]], tcp_pose.shape[0], axis=0)
-            return [
-                {
-                    "tcp_pose": tcp_pose,
-                    "gripper_width": gripper_width,
-                    "demo_start_pose": demo_start,
-                    "demo_end_pose": demo_end,
-                }
-            ]
-
-        episode = {
-            "tasks": [],
-            "episode_name": self.session_name,
-            "grippers_left": build_gripper_payload("left"),
-            "grippers_right": build_gripper_payload("right"),
-            "grippers_head": build_gripper_payload("head"),
-            "cameras_left": [],
-            "cameras_right": [],
-            "cameras_head": [],
-            "target_timestamps": np.asarray(target_timestamps, dtype=np.float64),
-        }
-
-        with self._trajectory_path.open("wb") as fh:
-            pickle.dump([episode], fh)
-
-@dataclass
-class TeleopTargets:
-    left_pos: np.ndarray
-    left_quat: np.ndarray
-    right_pos: np.ndarray
-    right_quat: np.ndarray
-    left_width: Optional[float]
-    right_width: Optional[float]
-    head_pos: Optional[np.ndarray]
-    head_quat: Optional[np.ndarray]
 
 
 def _pose_to_matrix(position, rotation_quat):
@@ -234,7 +77,9 @@ class TeleopVR:
         self._has_initial_pose = False
         self._last_left_width = 0.0
         self._last_right_width = 0.0
-        self._logger = TeleopLogger(save_trajectory=save_trajectory)
+        self.session_name = generate_session_name()
+        self._session_logger = SessionLogger(self.session_name)
+        self._trajectory_recorder = TrajectoryRecorder(self.session_name, enabled=save_trajectory)
 
     def initialize(self) -> bool:
         rv = False
@@ -268,7 +113,8 @@ class TeleopVR:
         if self._thread is not None:
             self._thread.join(timeout=1.0)
             self._thread = None
-        self._logger.close()
+        self._session_logger.close()
+        self._trajectory_recorder.close()
 
     def _teleop_loop(self) -> None:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server_sock:
@@ -278,12 +124,12 @@ class TeleopVR:
                 try:
                     data, _ = server_sock.recvfrom(8192)
                 except socket.timeout:
-                    self._logger.log_socket_timeout()
+                    self._session_logger.log_socket_timeout()
                     continue
 
                 udp_msg = data.decode("utf-8")
                 controller_state = json.loads(udp_msg)
-                self._logger.log_controller_state(controller_state)
+                self._session_logger.log_controller_state(controller_state)
 
                 with self._controller_lock:
                     self.vr_state.controller_state = controller_state
@@ -368,7 +214,7 @@ class TeleopVR:
             head_pos=head_pos,
             head_quat=head_quat,
         )
-        self._logger.log_target(targets, timestamp=time.time())
+        self._trajectory_recorder.log_target(targets, timestamp=time.time())
         return targets
 
     def _initialize_locked_poses(self) -> None:

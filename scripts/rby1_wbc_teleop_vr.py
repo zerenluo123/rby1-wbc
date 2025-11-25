@@ -23,7 +23,8 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from control.rby1_wbc import RBY1WBC
-from teleop.teleop_vr import TeleopTargets, TeleopVR
+from teleop.teleop_targets import TeleopTargets
+from teleop.teleop_vr import TeleopVR
 
 
 def _quat_angle_error(target_quat: np.ndarray, actual_quat: np.ndarray) -> float:

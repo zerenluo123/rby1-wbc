@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import base64
 import copy
-import csv
 import logging
 import struct
 import threading
 import time
-from datetime import datetime
-from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import mujoco
@@ -19,7 +16,9 @@ from flask import Flask, request
 from flask_socketio import SocketIO
 from scipy.spatial.transform import Rotation as R
 
-from .teleop_vr import TeleopTargets, TeleopLogger
+from demo.trajectory_recorder import TrajectoryRecorder
+from .teleop_targets import TeleopTargets
+from .session_logger import SessionLogger, generate_session_name
 
 
 logging.basicConfig(
@@ -113,35 +112,6 @@ def _controller_entry_from_pose(transform: np.ndarray, width: Optional[float]) -
     return entry
 
 
-class IntervalRecorder:
-    """Thread-safe CSV writer for pose handler intervals."""
-
-    def __init__(self, path: Path):
-        self._path = path
-        self._lock = threading.Lock()
-        self._closed = False
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = self._path.open("w", newline="")
-        self._writer = csv.writer(self._file)
-        self._writer.writerow(["timestamp", "perf_counter_s", "label", "delta_ms"])
-        self._file.flush()
-
-    def record(self, label: str, perf_timestamp: float, delta_ms: float) -> None:
-        timestamp = datetime.now().isoformat(timespec="milliseconds")
-        with self._lock:
-            if self._closed:
-                return
-            self._writer.writerow([timestamp, f"{perf_timestamp:.9f}", label, f"{delta_ms:.6f}"])
-            self._file.flush()
-
-    def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._file.close()
-            self._closed = True
-
-
 class TeleopIphone:
     """Socket.IO server that feeds ARKit poses into the WBC teleop interface."""
 
@@ -152,7 +122,6 @@ class TeleopIphone:
         port: int = 5555,
         save_trajectory: bool = False,
         use_portrait_mode: bool = True,
-        interval_log_dir: Optional[str] = "log/teleop_intervals",
     ):
         self.wbc = wbc
         self.host = host
@@ -173,14 +142,6 @@ class TeleopIphone:
         self._pose_lock = threading.Lock()
         self._latest_poses: Dict[str, Tuple[float, np.ndarray]] = {}
         self._alignment: Dict[str, np.ndarray] = {}
-        self._handler_interval_lock = threading.Lock()
-        self._last_pose_handler_time: Dict[str, Optional[float]] = {
-            "left": None,
-            "right": None,
-            "head": None,
-        }
-        self._interval_log_dir = Path(interval_log_dir) if interval_log_dir else None
-        self._interval_recorder: Optional[IntervalRecorder] = None
         self._controller_state = {"hands": {}}
         self._latest_widths: Dict[str, float] = {"left": 0.0, "right": 0.0}
         self._client_info: Dict[str, dict] = {}
@@ -204,7 +165,9 @@ class TeleopIphone:
             "head": self._mujoco_model.site("head").id,
         }
 
-        self._logger = TeleopLogger(save_trajectory=save_trajectory)
+        self.session_name = generate_session_name()
+        self._session_logger = SessionLogger(self.session_name)
+        self._trajectory_recorder = TrajectoryRecorder(self.session_name, enabled=save_trajectory)
 
     def _register_handlers(self) -> None:
         self._socketio.on_event("connect", self._on_connect)
@@ -213,27 +176,6 @@ class TeleopIphone:
         self._socketio.on_event("updateRight", self._make_pose_handler("right"))
         self._socketio.on_event("updateHead", self._make_pose_handler("head"))
         self._socketio.on_event("registerDevice", self._handle_device_registration)
-
-    def _start_interval_recorder(self) -> None:
-        if self._interval_log_dir is None:
-            return
-        self._interval_log_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_path = self._interval_log_dir / f"iphone_pose_intervals_{timestamp}.csv"
-        self._interval_recorder = IntervalRecorder(log_path)
-        logging.info("Pose interval samples will be recorded to %s", log_path)
-
-    def _stop_interval_recorder(self) -> None:
-        recorder = self._interval_recorder
-        self._interval_recorder = None
-        if recorder is not None:
-            recorder.close()
-
-    def _record_interval(self, label: str, perf_timestamp: float, delta_ms: float) -> None:
-        recorder = self._interval_recorder
-        if recorder is None:
-            return
-        recorder.record(label, perf_timestamp, delta_ms)
 
     def initialize(self) -> bool:
         self._fatal_error = None
@@ -244,7 +186,6 @@ class TeleopIphone:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop_event.clear()
-        self._start_interval_recorder()
         self._thread = threading.Thread(
             target=self._run_server, name="iphone-teleop-server", daemon=True
         )
@@ -265,11 +206,11 @@ class TeleopIphone:
         if self._thread is not None:
             self._thread.join(timeout=1.0)
             self._thread = None
-        self._logger.close()
+        self._session_logger.close()
+        self._trajectory_recorder.close()
         self._ready_event.clear()
         self._fatal_error = None
         self._was_ready = False
-        self._stop_interval_recorder()
 
     def _run_server(self) -> None:
         try:
@@ -328,18 +269,6 @@ class TeleopIphone:
 
     def _make_pose_handler(self, label: str):
         def handler(data: str) -> None:
-            now = time.perf_counter()
-            with self._handler_interval_lock:
-                last_call = self._last_pose_handler_time.get(label)
-                self._last_pose_handler_time[label] = now
-            if last_call is not None:
-                delta_ms = (now - last_call) * 1000.0
-                logging.info(
-                    "[%s]: %.2f ms",
-                    label.capitalize(),
-                    delta_ms,
-                )
-                self._record_interval(label, now, delta_ms)
             self._handle_pose_update(label, data)
 
         return handler
@@ -424,7 +353,7 @@ class TeleopIphone:
             controller_snapshot = self._serialize_controller_state_locked()
 
         if controller_snapshot.get("hands") or controller_snapshot.get("head"):
-            self._logger.log_controller_state(controller_snapshot)
+            self._session_logger.log_controller_state(controller_snapshot)
 
     def _serialize_controller_state_locked(self) -> dict:
         state = {"hands": {}}
@@ -538,5 +467,5 @@ class TeleopIphone:
             head_pos=head_pos,
             head_quat=head_quat,
         )
-        self._logger.log_target(targets, timestamp=time.time())
+        self._trajectory_recorder.log_target(targets, timestamp=time.time())
         return targets

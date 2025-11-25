@@ -26,7 +26,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from control.rby1_wbc import SharedTargets
 from ik.rby1_whole_body_ik import RBY1WholeBodyIK
-from teleop.teleop_vr import TeleopTargets, TeleopVR
+from teleop.teleop_targets import TeleopTargets
+from teleop.teleop_vr import TeleopVR
 
 DEFAULT_MODEL = PROJECT_ROOT / "model" / "rby1" / "rby1.xml"
 DEFAULT_WBC_CONFIG = PROJECT_ROOT / "config" / "wbc.yaml"
