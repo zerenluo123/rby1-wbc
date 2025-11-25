@@ -93,6 +93,9 @@ def load_pose_and_gripper(fname, idx=0):
     poses = {}
     widths = {}
     for side, grippers in grippers_by_side.items():
+        if not grippers:
+            # Some recordings (e.g., missing head stream) yield empty lists; skip them.
+            continue
         gripper = grippers[0]  # Assuming only one gripper per side in the plan
         eef_pose = gripper['tcp_pose']
         # transform to matrix (N, 7) -> (N, 4, 4)
