@@ -12,8 +12,8 @@ import mujoco
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-from dem
-from .teleop_targets importo.trajectory_recorder import TrajectoryRecorder TeleopTargets
+from demo.trajectory_recorder import TrajectoryRecorder
+from .teleop_targets import TeleopTargets
 from .session_logger import SessionLogger, generate_session_name
 from .vr_control_state import VRControlState
 
