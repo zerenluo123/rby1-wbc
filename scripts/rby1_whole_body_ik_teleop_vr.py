@@ -344,12 +344,12 @@ def main() -> None:
         description="Run RBY1 whole-body IK in MuJoCo driven by the Meta Quest teleop frontend."
     )
     parser.add_argument(
-        "--local-ip",
+        "--local_ip",
         required=True,
         help="Local Wi-Fi/LAN IP address where the Meta Quest headset sends controller poses.",
     )
     parser.add_argument(
-        "--meta-quest-ip",
+        "--meta_quest_ip",
         required=True,
         help="IP address of the Meta Quest headset on the same network.",
     )
