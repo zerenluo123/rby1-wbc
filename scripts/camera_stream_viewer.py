@@ -40,9 +40,9 @@ except Exception:  # pragma: no cover - headless/CI environments
 # Default serial-to-observation mapping for the five RBY1 cameras.  Override on
 # the command line with ``--camera <name>=<serial>`` if the wiring differs.
 DEFAULT_CAMERA_SERIAL_MAP: Mapping[str, str] = {
-    # "camera_head_main_rgb": "FLIR-Blackfly S BFS-PGE-50S5C-25260985",
-    # "camera_head_main_right_rgb": "FLIR-Blackfly S BFS-PGE-50S5C-25272263",
-    # "camera_head_ultrawide_rgb": "FLIR-Blackfly S BFS-PGE-50S5C-25260989",
+    "camera_head_main_rgb": "FLIR-Blackfly S BFS-PGE-50S5C-25260985",
+    "camera_head_main_right_rgb": "FLIR-Blackfly S BFS-PGE-50S5C-25272263",
+    "camera_head_ultrawide_rgb": "FLIR-Blackfly S BFS-PGE-50S5C-25260989",
     "camera_left_main_rgb": "FLIR-Blackfly S BFS-PGE-23S3C-24260091",
     "camera_right_main_rgb": "FLIR-Blackfly S BFS-PGE-23S3C-24260092",
 }

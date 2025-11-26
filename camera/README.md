@@ -73,3 +73,7 @@ synthetic images:
 ```bash
 python3 scripts/camera_stream_viewer.py --mock
 ```
+
+```
+sudo /usr/local/sbin/setup-x710.sh
+```

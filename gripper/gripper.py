@@ -73,10 +73,18 @@ class Gripper:
 
     def start(self):
         if self._thread is None or not self._thread.is_alive():
+            print("Starting gripper control thread")
             self._running = True
             self._thread = threading.Thread(target=self.loop, daemon=True)
             self._thread.start()
-
+        else:
+            if self._thread is not None:
+                print("Gripper control thread already running")
+            if not self._thread.is_alive():
+                print("Gripper control thread not alive, restarting")
+        if not self._thread.is_alive():
+            print("Gripper control thread not alive")
+                
     def stop(self):
         self._running = False
         if self._thread is not None:

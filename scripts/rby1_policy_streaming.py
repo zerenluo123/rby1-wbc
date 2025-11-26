@@ -98,7 +98,6 @@ def _convert_robot_observations(
     for effector, key in OBS_TF_KEYS.items():
         if key not in robot_obs or effector not in transform_map:
             continue
-        print("Applying observation model to TCP frame transform for", effector)
         converted[key] = _apply_transform_tf(robot_obs[key], transform_map[effector])
     return converted
 
@@ -176,9 +175,16 @@ def build_scheduled_actions(
     if length == 0:
         return []
 
-    timestamps = np.asarray(timestamps, dtype=float)
-    if timestamps.size == 0:
-        timestamps = now + fallback_dt * (np.arange(length, dtype=float) + 1.0)
+    timestamps = np.asarray(timestamps, dtype=float).reshape(-1)
+
+    def _timestamp_for_index(idx: int) -> float:
+        if timestamps.size == 0:
+            return now + fallback_dt * (idx + 1)
+        idx = min(idx, timestamps.size - 1)
+        ts = float(timestamps[idx])
+        if not np.isfinite(ts):
+            return now + fallback_dt * (idx + 1)
+        return ts
 
     scheduled: List[ScheduledAction] = []
     for idx in range(length):
@@ -199,15 +205,14 @@ def build_scheduled_actions(
             if key in payload and effector in TCP_TO_MODEL_FRAME:
                 payload[key] = _apply_transform_tf(payload[key], TCP_TO_MODEL_FRAME[effector])
 
-        timestamp = float(timestamps[min(idx, len(timestamps) - 1)])
-        if not np.isfinite(timestamp):
-            timestamp = now + fallback_dt * (idx + 1)
+        timestamp = _timestamp_for_index(idx)
         if timestamp <= now:
             # Drop commands that are already stale.
             continue
 
-        if idx + 1 < len(timestamps):
-            duration = float(max(fallback_dt, timestamps[idx + 1] - timestamp))
+        if idx + 1 < length:
+            next_timestamp = _timestamp_for_index(idx + 1)
+            duration = float(max(fallback_dt, next_timestamp - timestamp))
         else:
             duration = float(fallback_dt)
 
@@ -232,9 +237,6 @@ def _plot_action_chunk(
 
     if not actions:
         return None
-
-    timestamps = np.array([action.timestamp for action in actions], dtype=float)
-    rel_time = timestamps - timestamps[0]
 
     end_effector_keys = {
         "left": "left_tf",
@@ -539,6 +541,7 @@ def main() -> None:
         use_sim=args.sim_only,
         sim_model_path=args.sim_model,
         sim_viewer=args.sim_viewer,
+        command_lookahead=args.executor_lookahead,
     )
     robot.start()
     camera_streamer = None
@@ -653,20 +656,21 @@ def main() -> None:
                             print("[debug] Action batch rejected; skipping execution.")
                             continue
 
-                    lookahead = max(args.executor_lookahead, 0.0)
-                    min_start = time.monotonic() + lookahead
-                    earliest_ts = min(action.timestamp for action in scheduled_actions)
-                    if earliest_ts < min_start:
-                        shift = min_start - earliest_ts
-                        for action in scheduled_actions:
-                            action.timestamp += shift
-                        print(f"[policy] Shifted action batch forward by {shift:.3f}s to compensate latency.")
+                    # lookahead = max(args.executor_lookahead, 0.0)
+                    # min_start = time.monotonic() + lookahead
+                    # earliest_ts = min(action.timestamp for action in scheduled_actions)
+                    # if earliest_ts < min_start:
+                    #     shift = min_start - earliest_ts
+                    #     for action in scheduled_actions:
+                    #         action.timestamp += shift
+                    #     print(f"[policy] Shifted action batch forward by {shift:.3f}s to compensate latency.")
 
                     for action in scheduled_actions:
                         payload = _offset_gripper_action(action.payload, args.gripper_width_offset)
                         robot.schedule_waypoint(
                             payload=payload,
                             timestamp=action.timestamp,
+                            duration=max(action.duration, control_dt),
                         )
 
                 elapsed = time.monotonic() - start

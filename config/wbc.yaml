@@ -10,11 +10,11 @@ init_position:
   left_arm: [0.0, 0.0873, 0.0, -2.0944, 0.0, 0.9599, -1.5708]
   right_arm: [0.0, -0.0873, 0.0, -2.0944, 0.0, 0.9599, 1.5708]
   head: [0.0, 0.6109]
-  grippers: [0.1, 0.1]
+  grippers: [0.07, 0.07]
 
 # Controller parameters
 state_frequency_hz: 100.0
-trajectory_frequency_hz: 10.0
+trajectory_frequency_hz: 20.0
 ik_frequency_hz: 100.0
 use_interpolation: true
 command_timeout_sec: 0.1

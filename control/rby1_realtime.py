@@ -62,7 +62,6 @@ class _SimSnapshot:
     qpos: np.ndarray
     is_valid: bool = True
 
-
 def _build_interp1d(t: np.ndarray, values: np.ndarray) -> interp1d:
     return interp1d(
         t,
@@ -514,11 +513,12 @@ class RBY1PolicyRobot:
         use_sim: bool = False,
         sim_model_path: Optional[str] = None,
         sim_viewer: bool = False,
-        max_pos_speed: float = 0.5,
-        max_rot_speed: float = 2.0,
+        max_pos_speed: float = 0.25,    # m/s
+        max_rot_speed: float = 0.2,    # rad/s
         max_gripper_speed: float = 0.1,
         gripper_min_width: float = 0.0,
         gripper_max_width: float = 0.085,
+        command_lookahead: float = 0.0,
     ) -> None:
         if use_sim:
             self._backend: Any = _SimBackend(model_path=sim_model_path, enable_viewer=sim_viewer)
@@ -542,11 +542,6 @@ class RBY1PolicyRobot:
             "right": None,
             "head": None,
         }
-        self._pose_curr_time: Dict[str, Optional[float]] = {
-            "left": None,
-            "right": None,
-            "head": None,
-        }
         self._width_traj: Dict[str, Optional[ScalarTrajectoryInterpolator]] = {
             "left": None,
             "right": None,
@@ -555,14 +550,11 @@ class RBY1PolicyRobot:
             "left": None,
             "right": None,
         }
-        self._width_curr_time: Dict[str, Optional[float]] = {
-            "left": None,
-            "right": None,
-        }
         self._max_pos_speed = float(max_pos_speed)
         self._max_rot_speed = float(max_rot_speed)
         self._max_gripper_speed = float(max_gripper_speed)
         self._gripper_limits = (float(gripper_min_width), float(gripper_max_width))
+        self._command_lookahead = max(float(command_lookahead), 0.0)
 
         # Mirror of the MuJoCo model used for FK computations in the streaming
         # thread.  The worker keeps an internal model already, but sharing it
@@ -605,7 +597,6 @@ class RBY1PolicyRobot:
         if self._buffer_thread is not None:
             self._buffer_thread.join(timeout=1.0)
             self._buffer_thread = None
-        self._command_stop.set()
         if self._command_thread is not None:
             self._command_thread.join(timeout=1.0)
             self._command_thread = None
@@ -618,11 +609,9 @@ class RBY1PolicyRobot:
             for key in self._pose_traj:
                 self._pose_traj[key] = None
                 self._pose_last_waypoint[key] = None
-                self._pose_curr_time[key] = None
             for key in self._width_traj:
                 self._width_traj[key] = None
                 self._width_last_waypoint[key] = None
-                self._width_curr_time[key] = None
 
     def wait_until_ready(self, timeout: float = 5.0) -> None:
         """Block until the first valid snapshot is available."""
@@ -666,7 +655,8 @@ class RBY1PolicyRobot:
         command_dt = 1.0 / float(self._backend.trajectory_frequency_hz)
         while not self._command_stop.is_set():
             now = time.monotonic()
-            payload = self._sample_scheduled_payload(now)
+            query_time = now + self._command_lookahead
+            payload = self._sample_scheduled_payload(query_time)
             if payload is not None:
                 self.apply_action(payload, duration=command_dt, timestamp=now)
             wait_time = max(0.0, command_dt - (time.monotonic() - now))
@@ -811,30 +801,31 @@ class RBY1PolicyRobot:
     def _clamp_gripper_width(self, value: float) -> float:
         return float(np.clip(value, self._gripper_limits[0], self._gripper_limits[1]))
 
-    def _sample_scheduled_payload(self, now: float) -> Optional[Dict[str, np.ndarray]]:
+    def _sample_scheduled_payload(self, query_time: float) -> Optional[Dict[str, np.ndarray]]:
         with self._traj_lock:
             payload: Dict[str, np.ndarray] = {}
             for effector, key in (("left", "left_tf"), ("right", "right_tf"), ("head", "head_tf")):
                 traj = self._pose_traj.get(effector)
                 if traj is None:
                     continue
-                pose_vec = traj(now)
+                pose_vec = traj(query_time)
                 payload[key] = _posevec_to_tf(pose_vec[None])[0]
-                self._pose_curr_time[effector] = now
             for width_key, traj in self._width_traj.items():
                 if traj is None:
                     continue
-                value = float(traj(now))
+                value = float(traj(query_time))
                 if width_key == "left":
                     payload["left_gripper_width"] = value
                 else:
                     payload["right_gripper_width"] = value
-                self._width_curr_time[width_key] = now
             return payload or None
 
-    def schedule_waypoint(self, payload: Dict[str, np.ndarray], timestamp: float) -> None:
+
+    def schedule_waypoint(self, payload: Dict[str, np.ndarray], timestamp: float, duration: float) -> None:
         target_time = float(timestamp)
         now = time.monotonic()
+        if target_time <= now:
+            return
         current_obs: Optional[RobotObservation] = None
         obs_pose_map: Dict[str, np.ndarray] = {}
         obs_width_map: Dict[str, float] = {}
@@ -864,9 +855,7 @@ class RBY1PolicyRobot:
                     continue
                 pose_vec = _tf_to_posevec(tf)
                 traj = self._pose_traj.get(effector)
-                curr_exec_time = self._pose_curr_time.get(effector) or now
-                curr_time_eff = max(now, curr_exec_time)
-                desired_time = target_time if target_time > curr_time_eff else curr_time_eff + 1e-3
+                curr_time_eff = now
                 if traj is None:
                     if not _ensure_current_obs():
                         return
@@ -875,11 +864,10 @@ class RBY1PolicyRobot:
                         poses=np.array([obs_pose_map[effector]], dtype=float),
                     )
                     self._pose_last_waypoint[effector] = curr_time_eff
-                    self._pose_curr_time[effector] = curr_time_eff
                 last_waypoint_time = self._pose_last_waypoint.get(effector)
                 traj = traj.schedule_waypoint(
                     pose=pose_vec,
-                    time=desired_time,
+                    time=target_time,
                     curr_time=curr_time_eff,
                     last_waypoint_time=last_waypoint_time,
                     max_pos_speed=self._max_pos_speed,
@@ -894,9 +882,7 @@ class RBY1PolicyRobot:
                     continue
                 width_target = self._clamp_gripper_width(float(width_val))
                 traj = self._width_traj.get(width_key)
-                curr_exec_time = self._width_curr_time.get(width_key) or now
-                curr_time_eff = max(now, curr_exec_time)
-                desired_time = target_time if target_time > curr_time_eff else curr_time_eff + 1e-3
+                curr_time_eff = now
                 if traj is None:
                     if not _ensure_current_obs():
                         return
@@ -905,11 +891,10 @@ class RBY1PolicyRobot:
                         values=np.array([obs_width_map[width_key]], dtype=float),
                     )
                     self._width_last_waypoint[width_key] = curr_time_eff
-                    self._width_curr_time[width_key] = curr_time_eff
                 last_waypoint_time = self._width_last_waypoint.get(width_key)
                 traj = traj.schedule_waypoint(
                     value=width_target,
-                    time=desired_time,
+                    time=target_time,
                     curr_time=curr_time_eff,
                     last_waypoint_time=last_waypoint_time,
                     max_speed=self._max_gripper_speed,
