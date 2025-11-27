@@ -24,8 +24,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from control.rby1_wbc import SharedTargets
-from ik.rby1_whole_body_ik import RBY1WholeBodyIK
+from rby1.whole_body_control import SharedTargets
+from rby1.whole_body_ik import RBY1WholeBodyIK
 from teleop.teleop_targets import TeleopTargets
 from teleop.teleop_vr import TeleopVR
 
@@ -106,7 +106,7 @@ def _apply_initial_configuration(
     ik_solver: RBY1WholeBodyIK,
     init_config: dict,
 ) -> None:
-    """Mirror the initial joint pose loading from rby1_wbc.py."""
+    """Mirror the initial joint pose loading from rby1.whole_body_control."""
 
     def _to_array(values: Optional[list[float]]) -> Optional[np.ndarray]:
         if values is None:

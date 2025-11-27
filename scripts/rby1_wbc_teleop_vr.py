@@ -22,7 +22,7 @@ PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from control.rby1_wbc import RBY1WBC
+from rby1.whole_body_control import RBY1WBC
 from teleop.teleop_targets import TeleopTargets
 from teleop.teleop_vr import TeleopVR
 

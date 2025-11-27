@@ -9,7 +9,7 @@ _THIS_DIR = Path(__file__).resolve().parent
 if str(_THIS_DIR.parent) not in sys.path:
     sys.path.insert(0, str(_THIS_DIR.parent))
 
-from ik.rby1_whole_body_ik import RBY1WholeBodyIK  # noqa: E402
+from rby1.whole_body_ik import RBY1WholeBodyIK  # noqa: E402
 
 
 def main(num_trials: int = 10, pos_noise: float = 0.05, seed: int = 0) -> int:
@@ -89,5 +89,4 @@ def main(num_trials: int = 10, pos_noise: float = 0.05, seed: int = 0) -> int:
 if __name__ == "__main__":
     exit_code = main()
     sys.exit(exit_code)
-
 

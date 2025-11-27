@@ -12,7 +12,7 @@ _THIS_DIR = Path(__file__).resolve().parent
 if str(_THIS_DIR.parent) not in sys.path:
     sys.path.insert(0, str(_THIS_DIR.parent))
 
-from ik.rby1_whole_body_ik import RBY1WholeBodyIK
+from rby1.whole_body_ik import RBY1WholeBodyIK
 
 
 _PROJECT_ROOT = _THIS_DIR.parent

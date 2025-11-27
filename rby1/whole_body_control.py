@@ -16,9 +16,8 @@ import yaml
 
 from loop_rate_limiters import RateLimiter
 
-from ik.rby1_whole_body_ik import RBY1WholeBodyIK
-
-from . import (
+from .whole_body_ik import RBY1WholeBodyIK
+from control import (
     Config as ControllerConfig,
     RealtimeDriver,
     RobotSnapshot,
