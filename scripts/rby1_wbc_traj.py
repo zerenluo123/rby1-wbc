@@ -382,6 +382,7 @@ class RBY1WBCTrajectory:
             timestamp = time.monotonic()
 
             self.wbc.update_targets(
+                duration,
                 left_pos,
                 left_quat,
                 right_pos,
@@ -390,7 +391,6 @@ class RBY1WBCTrajectory:
                 right_width=right_width,
                 head_pos=head_pos,
                 head_quat=head_quat,
-                duration=duration,
                 timestamp=timestamp,
             )
             self.trajectory_index += 1 

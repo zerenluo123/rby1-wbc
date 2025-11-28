@@ -23,7 +23,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from rby1.whole_body_control import RBY1WBC
-from teleop.teleop_targets import TeleopTargets
+from rby1.ee_targets import EETargets
 from teleop.teleop_vr import TeleopVR
 
 
@@ -354,7 +354,7 @@ class RBY1WBCTeleopVR:
     def trajectory_loop(self) -> None:
         """Stream live targets from the Meta Quest to the WBC."""       
         while not self._stop_event.is_set():
-            target: TeleopTargets = self.teleop.compute_target()
+            target: EETargets = self.teleop.compute_target()
             if target is None:
                 self.trajectory_rate.sleep()
                 continue
@@ -363,6 +363,7 @@ class RBY1WBCTeleopVR:
             timestamp = time.monotonic()
             
             self.wbc.update_targets(
+                duration,
                 left_pos=target.left_pos,
                 left_quat=target.left_quat,
                 right_pos=target.right_pos,
@@ -371,7 +372,6 @@ class RBY1WBCTeleopVR:
                 right_width=target.right_width,
                 head_pos=target.head_pos,
                 head_quat=target.head_quat,
-                duration=duration,
                 timestamp=timestamp
             )
             self.trajectory_rate.sleep()

@@ -106,14 +106,18 @@ class RBY1WBCGui:
         left_quat = self.data.mocap_quat[self.ee_l_mid].copy()
         right_quat = self.data.mocap_quat[self.ee_r_mid].copy()
         head_quat = self.data.mocap_quat[self.head_mid].copy()
+        duration = 1.0 / float(self.wbc.trajectory_frequency_hz)
+        timestamp = time.monotonic()
 
         self.wbc.update_targets(
+            duration,
             left_pos,
             left_quat,
             right_pos,
             right_quat,
             head_pos=head_pos,
             head_quat=head_quat,
+            timestamp=timestamp,
         )
 
         mujoco.mj_camlight(self.model, self.data)

@@ -13,9 +13,9 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 from demo.trajectory_recorder import TrajectoryRecorder
-from .teleop_targets import TeleopTargets
 from .session_logger import SessionLogger, generate_session_name
 from .vr_control_state import VRControlState
+from rby1.ee_targets import EETargets
 
 
 logging.basicConfig(
@@ -150,7 +150,7 @@ class TeleopVR:
             self.vr_state.event_right_a_pressed |= bool(buttons.get("primaryButton"))
             self.vr_state.event_right_b_pressed |= bool(buttons.get("secondaryButton"))
 
-    def compute_target(self) -> Optional[TeleopTargets]:
+    def compute_target(self) -> Optional[EETargets]:
         """Compute the next teleoperation target for the WBC."""
         snapshot = self.wbc.get_latest_robot_state()
         if snapshot is None or not snapshot.is_valid:
@@ -204,7 +204,7 @@ class TeleopVR:
         if head_target_pose is not None:
             head_pos, head_quat = self._matrix_to_pose(head_target_pose)
 
-        targets = TeleopTargets(
+        targets = EETargets(
             left_pos=left_pos,
             left_quat=left_quat,
             right_pos=right_pos,

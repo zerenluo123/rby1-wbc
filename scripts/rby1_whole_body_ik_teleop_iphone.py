@@ -24,9 +24,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from rby1.whole_body_control import SharedTargets
 from rby1.whole_body_ik import RBY1WholeBodyIK
-from teleop.teleop_targets import TeleopTargets
+from rby1.ee_targets import EETargets
 from teleop.teleop_iphone import TeleopIphone
 
 DEFAULT_MODEL = PROJECT_ROOT / "model" / "rby1" / "rby1.xml"
@@ -149,13 +148,14 @@ def _apply_initial_configuration(
 
 def _update_targets_from_teleop(
     teleop: TeleopIphone,
-    shared_targets: SharedTargets,
+    shared_targets: EETargets,
     duration: float,
-) -> Optional[TeleopTargets]:
-    target: Optional[TeleopTargets] = teleop.compute_target()
+) -> Optional[EETargets]:
+    target: Optional[EETargets] = teleop.compute_target()
     if target is None:
         return None
     shared_targets.set_targets(
+        duration,
         left_pos=target.left_pos,
         left_quat=target.left_quat,
         right_pos=target.right_pos,
@@ -164,7 +164,6 @@ def _update_targets_from_teleop(
         right_width=target.right_width,
         head_pos=target.head_pos,
         head_quat=target.head_quat,
-        duration=duration,
         timestamp=time.monotonic(),
     )
     return target
@@ -219,7 +218,7 @@ def _update_pose_markers(
     viewer,
     data: mujoco.MjData,
     site_ids: dict[str, int],
-    target: Optional[TeleopTargets],
+    target: Optional[EETargets],
 ) -> None:
     if viewer is None or viewer.user_scn is None:
         return
@@ -304,7 +303,7 @@ def main() -> None:
     _apply_gripper_widths(data.qpos, gripper_indices, left_gripper_width, right_gripper_width)
     mujoco.mj_forward(model, data)
 
-    shared_targets = SharedTargets()
+    shared_targets = EETargets()
     site_ids = {
         "left": model.site("end_effector_l").id,
         "right": model.site("end_effector_r").id,
@@ -326,7 +325,7 @@ def main() -> None:
     ik_rate = RateLimiter(frequency=args.ik_hz, warn=False)
     target_interval = 1.0 / max(args.target_hz, 1e-3)
     next_target_time = time.monotonic()
-    latest_target: Optional[TeleopTargets] = None
+    latest_target: Optional[EETargets] = None
 
     prev_qpos = data.qpos.copy()
     viewer = None
