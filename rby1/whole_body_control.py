@@ -26,10 +26,6 @@ from control import (
 from gripper.gripper import Gripper
 
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
-# TRI's IK runs at 500 hz and ours at 100 hz, so scale the gains by 5x
-BASE_ERROR_GAIN = np.array([0.2, 0.2, 0.2], dtype=float)
-# Might need to tune this more
-BASE_VELOCITY_GAIN = np.array([0.1, 0.1, 0.12], dtype=float)
 
 class RobotStateBuffer:
     """Stores the latest robot snapshot retrieved from the controller."""
@@ -282,6 +278,13 @@ class RBY1WBC:
         self.ik_frequency_hz = self.config["ik_frequency_hz"]
         self.use_interpolation = self.config["use_interpolation"]
         self.command_timeout_sec = self.config["command_timeout_sec"]
+        # Base control gains (configurable for tuning)
+        self.base_error_gain = np.asarray(
+            self.config.get("base_error_gain", [0.2, 0.2, 0.2]), dtype=float
+        )
+        self.base_velocity_gain = np.asarray(
+            self.config.get("base_velocity_gain", [0.1, 0.1, 0.12]), dtype=float
+        )
 
         # Initialize Controller loops
         self.ik_rate = RateLimiter(frequency=self.ik_frequency_hz, warn=False)
@@ -544,13 +547,13 @@ class RBY1WBC:
             dtype=float,
         )
 
-        feedback = BASE_ERROR_GAIN * error
+        feedback = self.base_error_gain * error
 
         velocity_desired_world = np.array(
             [float(sol_qvel[0]), float(sol_qvel[1]), float(sol_qvel[5])],
             dtype=float,
         )
-        velocity_command_world = feedback + BASE_VELOCITY_GAIN * velocity_desired_world
+        velocity_command_world = feedback + self.base_velocity_gain * velocity_desired_world
 
         cy = math.cos(measured_yaw)
         sy = math.sin(measured_yaw)
