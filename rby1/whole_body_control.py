@@ -266,25 +266,27 @@ class RBY1WBC:
         try:
             config_path = Path(config_path)
             with config_path.open("r", encoding="utf-8") as f:
-                self.config = yaml.safe_load(f) 
+                self.config = yaml.safe_load(f)
         except Exception as e:
             raise Exception(f"Exception while loading config file: {e}")
+        if not isinstance(self.config, dict):
+            raise ValueError(f"WBC config at {config_path} must be a mapping.")
+
+        def require(name: str):
+            if name not in self.config:
+                raise KeyError(f"Missing required WBC config key: {name}")
+            return self.config[name]
         
-        self.address = self.config["address"]
-        self.model_path = PROJECT_ROOT + self.config["model_path"]
-        self.init_position = self.config["init_position"]
-        self.state_frequency_hz = self.config["state_frequency_hz"]
-        self.trajectory_frequency_hz = self.config["trajectory_frequency_hz"]
-        self.ik_frequency_hz = self.config["ik_frequency_hz"]
-        self.use_interpolation = self.config["use_interpolation"]
-        self.command_timeout_sec = self.config["command_timeout_sec"]
-        # Base control gains (configurable for tuning)
-        self.base_error_gain = np.asarray(
-            self.config.get("base_error_gain", [0.2, 0.2, 0.2]), dtype=float
-        )
-        self.base_velocity_gain = np.asarray(
-            self.config.get("base_velocity_gain", [0.1, 0.1, 0.12]), dtype=float
-        )
+        self.address = require("address")
+        self.model_path = PROJECT_ROOT + str(require("model_path"))
+        self.init_position = require("init_position")
+        self.state_frequency_hz = require("state_frequency_hz")
+        self.trajectory_frequency_hz = require("trajectory_frequency_hz")
+        self.ik_frequency_hz = require("ik_frequency_hz")
+        self.use_interpolation = require("use_interpolation")
+        self.command_timeout_sec = require("command_timeout_sec")
+        self.base_error_gain = np.asarray(require("base_error_gain"), dtype=float)
+        self.base_velocity_gain = np.asarray(require("base_velocity_gain"), dtype=float)
 
         # Initialize Controller loops
         self.ik_rate = RateLimiter(frequency=self.ik_frequency_hz, warn=False)
