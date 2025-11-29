@@ -93,7 +93,7 @@ class RBY1WBC:
         self.ik_rate = RateLimiter(frequency=self.ik_frequency_hz, warn=False)
         self.state_poll_rate = RateLimiter(frequency=self.state_frequency_hz, warn=False)
 
-        self.shared_targets = EETargets()
+        self.ee_targets = EETargets()
         self.robot_state = RobotStateBuffer()
 
         self._stop = threading.Event()
@@ -160,7 +160,7 @@ class RBY1WBC:
         head_quat: Optional[np.ndarray] = None,
         timestamp: Optional[float] = None,
     ) -> None:
-        self.shared_targets.set_targets(
+        self.ee_targets.set_targets(
             duration,
             left_pos,
             left_quat,
@@ -285,7 +285,7 @@ class RBY1WBC:
             snapshot = self.robot_state.load()
             current_qpos: Optional[np.ndarray] = self.snapshot_to_qpos(snapshot)
             now = time.monotonic()
-            left_pos, left_quat, left_width, right_pos, right_quat, right_width, head_pos, head_quat = self.shared_targets.get_for_ik(use_interpolation=self.use_interpolation)
+            left_pos, left_quat, left_width, right_pos, right_quat, right_width, head_pos, head_quat = self.ee_targets.get_for_ik(use_interpolation=self.use_interpolation)
 
             if current_qpos is None or left_pos is None or right_pos is None:
                 self.ik_rate.sleep()
