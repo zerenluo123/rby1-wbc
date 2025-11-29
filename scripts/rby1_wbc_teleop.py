@@ -5,13 +5,10 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import threading
-import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import yaml
-from loop_rate_limiters import RateLimiter
 
 # Ensure project root is on sys.path regardless of current working directory.
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
@@ -20,92 +17,19 @@ if PROJECT_ROOT not in sys.path:
 
 from rby1.whole_body_control import RBY1WBC
 from rby1.ee_targets import EETargets
-from rby1.state_visualizer import StateVisualizer
+from rby1.rby1_wbc_app import WBCStreamingApp
 from teleop.teleop_iphone import TeleopIphone
 from teleop.teleop_vr import TeleopVR
 
 
-class RBY1WBCTeleop:
+class RBY1WBCTeleop(WBCStreamingApp):
     def __init__(self, wbc: RBY1WBC, teleop: Any, headless: bool = False) -> None:
-        self.wbc = wbc
         self.teleop = teleop
-        self.headless = headless
-
-        self.visualizer = None
-        if not self.headless:
-            snapshot = self.wbc.wait_for_first_state()
-            qpos = self.wbc.snapshot_to_qpos(snapshot)
-            self.visualizer = StateVisualizer(
-                model_path=self.wbc.model_path, initial_qpos=qpos, print_errors=True
-            )
-            self.viewer_rate = RateLimiter(frequency=60.0, warn=False)
-
-        # Trajectory streamer setup
-        self.trajectory_rate = RateLimiter(
-            frequency=self.wbc.trajectory_frequency_hz, warn=False
-        )
-        self._stop_event = threading.Event()
-        self._trajectory_thread: Optional[threading.Thread] = None
+        super().__init__(wbc=wbc, headless=headless)
         self.teleop.start()
 
-    def visualize_loop(self) -> None:
-        snapshot = self.wbc.get_latest_robot_state()
-        qpos = self.wbc.snapshot_to_qpos(snapshot)
-        targets = self.wbc.ee_targets.get_target()
-        self.visualizer.render(qpos, targets)
-        self.viewer_rate.sleep()
-
-    def trajectory_loop(self) -> None:
-        while not self._stop_event.is_set():
-            target: Optional[EETargets] = self.teleop.compute_target()
-            if target is None:
-                self.trajectory_rate.sleep()
-                continue
-
-            duration = self.trajectory_rate.dt
-            timestamp = time.monotonic()
-            self.wbc.update_targets(
-                duration,
-                left_pos=target.left_pos,
-                left_quat=target.left_quat,
-                right_pos=target.right_pos,
-                right_quat=target.right_quat,
-                left_width=target.left_width,
-                right_width=target.right_width,
-                head_pos=target.head_pos,
-                head_quat=target.head_quat,
-                timestamp=timestamp,
-            )
-            self.trajectory_rate.sleep()
-
-    def run(self) -> None:
-        self._trajectory_thread = threading.Thread(
-            target=self.trajectory_loop, name="teleop_streamer", daemon=True
-        )
-        self._trajectory_thread.start()
-
-        try:
-            if self.headless:
-                while not self._stop_event.is_set():
-                    time.sleep(0.01)
-            else:
-                viewer = self.visualizer.viewer
-                while viewer.is_running():
-                    self.visualize_loop()
-        except KeyboardInterrupt:
-            self._stop_event.set()
-            return
-
-    def close(self) -> None:
-        self._stop_event.set()
-        if self._trajectory_thread is not None:
-            self._trajectory_thread.join(timeout=1.0)
-        self.teleop.stop()
-        if not self.headless:
-            try:
-                self.visualizer.viewer.close()
-            except Exception:
-                pass
+    def get_target(self) -> Optional[EETargets]:
+        return self.teleop.compute_target()
 
 def build_teleop(mode:str, wbc: RBY1WBC, config: Dict[str, Any], save_trajectory: bool) -> Any:
     if mode == "vr":
@@ -191,8 +115,7 @@ def main() -> None:
         try:
             if gui is not None:
                 gui.close()
-            else:
-                teleop.stop()
+            teleop.stop()
         finally:
             wbc.stop()
 
