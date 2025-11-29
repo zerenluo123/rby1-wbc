@@ -34,8 +34,8 @@ T_CONV = np.array(
 )
 
 
-LOCAL_PORT = 5005
-META_QUEST_PORT = 6000
+DEFAULT_LOCAL_PORT = 5005
+DEFAULT_META_QUEST_PORT = 6000
 
 
 def _pose_to_matrix(position, rotation_quat):
@@ -53,11 +53,15 @@ class TeleopVR:
         wbc,
         local_ip: str,
         meta_quest_ip: str,
+        local_port: int = DEFAULT_LOCAL_PORT,
+        meta_quest_port: int = DEFAULT_META_QUEST_PORT,
         save_trajectory: bool = False,
     ):
         self.wbc = wbc
         self.local_ip = local_ip
         self.meta_quest_ip = meta_quest_ip
+        self.local_port = int(local_port)
+        self.meta_quest_port = int(meta_quest_port)
 
         self.vr_state = VRControlState()
         self._controller_lock = threading.Lock()
@@ -94,10 +98,10 @@ class TeleopVR:
             print(f"Meta Quest is not connected to the same network: {self.meta_quest_ip}")
 
         if rv:
-            payload = {"ip": self.local_ip, "port": LOCAL_PORT}
+            payload = {"ip": self.local_ip, "port": self.local_port}
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                 message = json.dumps(payload).encode("utf-8")
-                sock.sendto(message, (self.meta_quest_ip, META_QUEST_PORT))
+                sock.sendto(message, (self.meta_quest_ip, self.meta_quest_port))
         return rv
 
     def start(self) -> None:
@@ -118,7 +122,7 @@ class TeleopVR:
 
     def _teleop_loop(self) -> None:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server_sock:
-            server_sock.bind((self.local_ip, LOCAL_PORT))
+            server_sock.bind((self.local_ip, self.local_port))
             server_sock.settimeout(1.0)
             while not self._stop_event.is_set():
                 try:

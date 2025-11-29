@@ -1,16 +1,16 @@
-"""Meta Quest teleoperation frontend for the standalone RBY1 WBC thread."""
+"""Unified teleoperation frontend for the RBY1 whole-body controller."""
 
 from __future__ import annotations
 
 import argparse
-import math
 import os
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
+import yaml
 from loop_rate_limiters import RateLimiter
 
 # Ensure project root is on sys.path regardless of current working directory.
@@ -21,23 +21,26 @@ if PROJECT_ROOT not in sys.path:
 from rby1.whole_body_control import RBY1WBC
 from rby1.ee_targets import EETargets
 from rby1.state_visualizer import StateVisualizer
+from teleop.teleop_iphone import TeleopIphone
 from teleop.teleop_vr import TeleopVR
 
-class RBY1WBCTeleopVR:
-    def __init__(self, wbc: RBY1WBC, teleop: TeleopVR, headless: bool = False) -> None:
+
+class RBY1WBCTeleop:
+    def __init__(self, wbc: RBY1WBC, teleop: Any, headless: bool = False) -> None:
         self.wbc = wbc
+        self.teleop = teleop
         self.headless = headless
+
         self.visualizer = None
         if not self.headless:
             snapshot = self.wbc.wait_for_first_state()
             qpos = self.wbc.snapshot_to_qpos(snapshot)
             self.visualizer = StateVisualizer(
-                model_path=self.wbc.model_path, initial_qpos = qpos, print_errors=True
+                model_path=self.wbc.model_path, initial_qpos=qpos, print_errors=True
             )
             self.viewer_rate = RateLimiter(frequency=60.0, warn=False)
 
         # Trajectory streamer setup
-        self.teleop = teleop
         self.trajectory_rate = RateLimiter(
             frequency=self.wbc.trajectory_frequency_hz, warn=False
         )
@@ -53,16 +56,14 @@ class RBY1WBCTeleopVR:
         self.viewer_rate.sleep()
 
     def trajectory_loop(self) -> None:
-        """Stream live targets from the Meta Quest to the WBC."""
         while not self._stop_event.is_set():
-            target: EETargets = self.teleop.compute_target()
+            target: Optional[EETargets] = self.teleop.compute_target()
             if target is None:
                 self.trajectory_rate.sleep()
                 continue
 
             duration = self.trajectory_rate.dt
             timestamp = time.monotonic()
-
             self.wbc.update_targets(
                 duration,
                 left_pos=target.left_pos,
@@ -103,28 +104,53 @@ class RBY1WBCTeleopVR:
         if not self.headless:
             try:
                 self.visualizer.viewer.close()
-            except Exception:  # pragma: no cover - best effort cleanup
+            except Exception:
                 pass
 
+def build_teleop(mode:str, wbc: RBY1WBC, config: Dict[str, Any], save_trajectory: bool) -> Any:
+    if mode == "vr":
+        local_ip = config.get("local_ip")
+        meta_quest_ip = config.get("meta_quest_ip")
+        local_port = int(config.get("local_port", 5005))
+        meta_quest_port = int(config.get("meta_quest_port", 6000))
+        if not local_ip or not meta_quest_ip:
+            raise ValueError("Meta Quest mode requires 'local_ip' and 'meta_quest_ip' in config/teleop_vr.yaml.")
+        teleop = TeleopVR(
+            wbc=wbc,
+            local_ip=str(local_ip),
+            meta_quest_ip=str(meta_quest_ip),
+            local_port=local_port,
+            meta_quest_port=meta_quest_port,
+            save_trajectory=save_trajectory,
+        )
+    elif mode == "iphone":
+        host = str(config.get("host", "0.0.0.0"))
+        port = int(config.get("port", 5555))
+        portrait = bool(config.get("portrait", False))
+        teleop = TeleopIphone(
+            wbc=wbc,
+            host=host,
+            port=port,
+            save_trajectory=save_trajectory,
+            use_portrait_mode=portrait,
+        )
+    else:
+        raise ValueError(f"Unsupported teleop mode: {mode}")
+    return teleop
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="RBY1 whole-body teleop GUI driven by Meta Quest"
+        description="RBY1 whole-body teleop frontend for VR or iPhone clients."
     )
     parser.add_argument(
-        "--local_ip",
-        required=True,
-        help="Local Wi-Fi (or LAN) IP address where the Meta Quest should stream controller poses.",
-    )
-    parser.add_argument(
-        "--meta_quest_ip",
-        required=True,
-        help="IP address of the Meta Quest headset on the same network.",
+        "--mode",
+        choices=["vr", "iphone"],
+        help="Select teleop mode; defaults to 'vr' when not provided.",
     )
     parser.add_argument(
         "--headless",
         action="store_true",
-        help="Skip launching the MuJoCo viewer (useful for debugging controller only).",
+        help="Skip launching the MuJoCo viewer.",
     )
     parser.add_argument(
         "--save",
@@ -133,28 +159,42 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.headless:
+    mode = args.mode or "vr"
+    headless = bool(args.headless)
+    save_trajectory = bool(args.save)
+    if headless:
         os.environ.setdefault("MUJOCO_GL", "egl")
 
+    # Load config
+    config_path = Path(PROJECT_ROOT + f"/config/teleop_{mode}.yaml")
+    try:
+        with config_path.open("r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+    except Exception as e:
+        raise Exception(f"Exception while loading config file: {e}")
+    if not isinstance(config, dict):
+        raise ValueError(f"WBC config at {config_path} must be a mapping.")
+
+    # Run 
     wbc = RBY1WBC()
     wbc.start()
-    teleop = TeleopVR(
-        wbc=wbc,
-        local_ip=args.local_ip,
-        meta_quest_ip=args.meta_quest_ip,
-        save_trajectory=args.save,
-    )
+    teleop = build_teleop(mode, wbc, config, save_trajectory=save_trajectory)
     if not teleop.initialize():
-        raise Exception("Teleoperation can not be initialized!")
+        wbc.stop()
+        raise RuntimeError("Teleoperation can not be initialized!")
 
-    gui = None
+    gui: Optional[RBY1WBCTeleop] = None
     try:
-        gui = RBY1WBCTeleopVR(wbc=wbc, teleop=teleop, headless=args.headless)
+        gui = RBY1WBCTeleop(wbc=wbc, teleop=teleop, headless=headless)
         gui.run()
     finally:
-        if gui is not None:
-            gui.close()
-        wbc.stop()
+        try:
+            if gui is not None:
+                gui.close()
+            else:
+                teleop.stop()
+        finally:
+            wbc.stop()
 
 
 if __name__ == "__main__":
