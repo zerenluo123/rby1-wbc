@@ -9,9 +9,9 @@ from loop_rate_limiters import RateLimiter
 from .ee_targets import EETargets
 from .state_visualizer import StateVisualizer
 from .whole_body_control import RBY1WBC
+from .whole_body_ik import RBY1WholeBodyIK
 
-
-class WBCStreamingApp:
+class RBY1WBCApp:
     """Reusable visualizer + trajectory loop for streaming WBC targets."""
 
     def __init__(
@@ -47,14 +47,11 @@ class WBCStreamingApp:
 
     # ----- Runtime --------------------------------------------------------------
     def visualize_loop(self) -> None:
-        if self.visualizer is None:
-            return
         snapshot = self.wbc.get_latest_robot_state()
         qpos = self.wbc.snapshot_to_qpos(snapshot)
         targets = self.wbc.ee_targets.get_target()
         self.visualizer.render(qpos, targets)
-        if self.viewer_rate is not None:
-            self.viewer_rate.sleep()
+        self.viewer_rate.sleep()
 
     def trajectory_loop(self) -> None:
         while not self._stop_event.is_set():

@@ -19,10 +19,10 @@ if PROJECT_ROOT not in sys.path:
 from rby1.whole_body_control import RBY1WBC
 from demo.trajectory_loader import load_trajectory
 from rby1.ee_targets import EETargets
-from rby1.rby1_wbc_app import WBCStreamingApp
+from rby1.rby1_wbc_app import RBY1WBCApp
 
 
-class RBY1WBCTrajectory(WBCStreamingApp):
+class RBY1WBCTrajectory(RBY1WBCApp):
     def __init__(
         self,
         wbc: RBY1WBC,

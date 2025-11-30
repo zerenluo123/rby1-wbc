@@ -14,9 +14,10 @@ if PROJECT_ROOT not in sys.path:
 
 from rby1.whole_body_control import RBY1WBC
 from rby1.ee_targets import EETargets
-from rby1.rby1_wbc_app import WBCStreamingApp
+from rby1.rby1_wbc_app import RBY1WBCApp
 
-class RBY1WBCGui(WBCStreamingApp):
+
+class RBY1WBCGui(RBY1WBCApp):
     def __init__(self, wbc: RBY1WBC):
         self.mocap_ids = None
         super().__init__(

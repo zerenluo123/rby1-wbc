@@ -17,12 +17,12 @@ if PROJECT_ROOT not in sys.path:
 
 from rby1.whole_body_control import RBY1WBC
 from rby1.ee_targets import EETargets
-from rby1.rby1_wbc_app import WBCStreamingApp
+from rby1.rby1_wbc_app import RBY1WBCApp
 from teleop.teleop_iphone import TeleopIphone
 from teleop.teleop_vr import TeleopVR
 
 
-class RBY1WBCTeleop(WBCStreamingApp):
+class RBY1WBCTeleop(RBY1WBCApp):
     def __init__(self, wbc: RBY1WBC, teleop: Any, headless: bool = False) -> None:
         self.teleop = teleop
         super().__init__(wbc=wbc, headless=headless)
