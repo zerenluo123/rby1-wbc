@@ -363,9 +363,8 @@ class RBY1WholeBodyIK:
         
         # Main posture task
         posture_task = self._posture_task
-        # Set reference posture
-        reference_qpos = self._get_nominal_posture(current_qpos)
-        posture_task.set_target(reference_qpos)
+        # Make posture stickiness pull toward the current pose (acts like damping)
+        posture_task.set_target(current_qpos.copy())
         tasks.append(posture_task)
 
         # Extend with cached tasks
@@ -602,8 +601,8 @@ class RBY1WholeBodyIK:
             frame_type="body",
             root_name=self.base_name,
             root_type="body",
-            position_cost=self.com_over_base_pos_cost,  # Medium cost for stability
-            orientation_cost=0.0,  # Don't constrain relative orientation
+            position_cost=[self.com_over_base_pos_cost, self.com_over_base_pos_cost, 0.0],
+            orientation_cost=0.0,
             lm_damping=1e-4,
         )
         # Torso should be above base center with some tolerance
