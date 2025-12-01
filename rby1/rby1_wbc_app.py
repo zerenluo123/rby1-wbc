@@ -8,7 +8,7 @@ from loop_rate_limiters import RateLimiter
 
 from .ee_targets import EETargets
 from .state_visualizer import StateVisualizer
-from .whole_body_control import RBY1WBC
+from control.rby1_wbc import RBY1WBC
 from .whole_body_ik import RBY1WholeBodyIK
 
 class RBY1WBCApp:
