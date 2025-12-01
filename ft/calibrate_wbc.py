@@ -19,7 +19,7 @@ PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from control.rby1_wbc import RBY1WBC, RobotSnapshot
+from rby1.whole_body_control import RBY1WBC, RobotSnapshot
 
 
 def _wxyz_to_xyzw(quat: np.ndarray) -> np.ndarray:
@@ -127,13 +127,13 @@ class FTCalibrator:
 
         gripper_left, gripper_right = self.wbc.get_latest_gripper_widths()
         self.wbc.update_targets(
-            left_target_pos,
-            left_target_quat,
-            right_target_pos,
-            right_target_quat,
+            self.cfg.move_duration,
+            left_pos=left_target_pos,
+            left_quat=left_target_quat,
+            right_pos=right_target_pos,
+            right_quat=right_target_quat,
             left_width=gripper_left,
             right_width=gripper_right,
-            duration=self.cfg.move_duration,
         )
         time.sleep(self.cfg.settle_time)
 
@@ -158,13 +158,13 @@ class FTCalibrator:
                         right_target_quat = target_quat
 
                     self.wbc.update_targets(
-                        left_target_pos,
-                        left_target_quat,
-                        right_target_pos,
-                        right_target_quat,
+                        self.cfg.move_duration,
+                        left_pos=left_target_pos,
+                        left_quat=left_target_quat,
+                        right_pos=right_target_pos,
+                        right_quat=right_target_quat,
                         left_width=gripper_left,
                         right_width=gripper_right,
-                        duration=self.cfg.move_duration,
                     )
                     self._wait_for_settle(target_quat)
                     wrench_avg = self._sample_wrench()
@@ -180,13 +180,13 @@ class FTCalibrator:
         else:
             right_target_quat = initial_quat.copy()
         self.wbc.update_targets(
-            left_target_pos,
-            left_target_quat,
-            right_target_pos,
-            right_target_quat,
+            self.cfg.move_duration,
+            left_pos=left_target_pos,
+            left_quat=left_target_quat,
+            right_pos=right_target_pos,
+            right_quat=right_target_quat,
             left_width=gripper_left,
             right_width=gripper_right,
-            duration=self.cfg.move_duration,
         )
         time.sleep(self.cfg.settle_time)
 

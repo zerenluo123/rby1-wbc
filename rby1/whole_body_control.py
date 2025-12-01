@@ -23,7 +23,7 @@ from control import (
     AdmittanceController,
     AdmittanceControllerConfig,
 )
-from control.ft_calibrator import FTCalibrator
+from ft.calibrator import FTCalibrator
 
 from gripper.gripper import Gripper
 

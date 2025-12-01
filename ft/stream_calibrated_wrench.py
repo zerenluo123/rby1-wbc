@@ -19,7 +19,7 @@ PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from control.rby1_wbc import RBY1WBC
+from rby1.whole_body_control import RBY1WBC
 
 
 def _parse_tilts(spec: str) -> List[Tuple[float, float]]:
@@ -220,13 +220,13 @@ def main() -> None:
         left_width, right_width = wbc.get_latest_gripper_widths()
 
         wbc.update_targets(
-            left_pos,
-            left_quat,
-            right_pos,
-            right_quat,
+            max(0.5, args.stable_duration),
+            left_pos=left_pos,
+            left_quat=left_quat,
+            right_pos=right_pos,
+            right_quat=right_quat,
             left_width=left_width,
             right_width=right_width,
-            duration=max(0.5, args.stable_duration),
         )
 
         arm_quat = left_quat if args.arm == "left" else right_quat
@@ -294,13 +294,13 @@ def main() -> None:
                     else:
                         right_target_quat = quat.copy()
                     wbc.update_targets(
-                        left_pos,
-                        left_target_quat,
-                        right_pos,
-                        right_target_quat,
+                        args.move_duration,
+                        left_pos=left_pos,
+                        left_quat=left_target_quat,
+                        right_pos=right_pos,
+                        right_quat=right_target_quat,
                         left_width=left_width,
                         right_width=right_width,
-                        duration=args.move_duration,
                     )
                 return _cmd
 
