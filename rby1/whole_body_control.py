@@ -15,7 +15,7 @@ import yaml
 from loop_rate_limiters import RateLimiter
 
 from .whole_body_ik import RBY1WholeBodyIK
-from .ee_targets import EETargets
+from .ee_targets import EETargets, _normalize_quaternion
 from control import (
     Config as ControllerConfig,
     RealtimeDriver,
