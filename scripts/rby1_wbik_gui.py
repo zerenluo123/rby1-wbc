@@ -36,6 +36,13 @@ def main():
 
     # Initialize from model default
     mujoco.mj_forward(model, data)
+    # Use IK's nominal pose as initial posture for both IK and viewer
+    nominal_qpos = ik._get_nominal_posture(ik.data.qpos.copy())
+    ik.data.qpos[:] = nominal_qpos
+    mujoco.mj_forward(ik.model, ik.data)
+    ik.configuration.update(q=ik.data.qpos)
+
+    data.qpos[:] = nominal_qpos
     current_qpos = data.qpos.copy()
     prev_qpos = current_qpos.copy()
 
@@ -44,9 +51,18 @@ def main():
     ee_r_mid = model.body("ee_r_target").mocapid[0]
     head_mid = model.body("head_target").mocapid[0]
 
-    _, head_nominal_quat = site_pose("head", current_qpos)
-    head_nominal_pos = site_pos("head", current_qpos)
+    left_nominal_pos = site_pos("end_effector_l", current_qpos)
+    right_nominal_pos = site_pos("end_effector_r", current_qpos)
+    head_nominal_pos, head_nominal_quat = site_pose("head", current_qpos)
+
+    left_nominal_quat = data.xquat[model.body("EE_BODY_L").id].copy()
+    right_nominal_quat = data.xquat[model.body("EE_BODY_R").id].copy()
+
+    data.mocap_pos[ee_l_mid] = left_nominal_pos
+    data.mocap_pos[ee_r_mid] = right_nominal_pos
     data.mocap_pos[head_mid] = head_nominal_pos
+    data.mocap_quat[ee_l_mid] = left_nominal_quat
+    data.mocap_quat[ee_r_mid] = right_nominal_quat
     data.mocap_quat[head_mid] = head_nominal_quat
 
     # Passive viewer loop
@@ -55,7 +71,7 @@ def main():
     ) as viewer:
         mujoco.mjv_defaultFreeCamera(model, viewer.cam)
 
-        rate = RateLimiter(frequency=100.0, warn=False)
+        rate = RateLimiter(frequency=30.0, warn=False)
 
         while viewer.is_running():
             # Read targets from mocap spheres (drag with mouse in viewer)
@@ -68,16 +84,19 @@ def main():
 
             # Run whole-body IK from current viewer state
             current_qpos = data.qpos.copy()
-            sol_qpos, sol_vel, success, _info = ik.solve(
+            ik_start = time.perf_counter()
+            sol_qpos, sol_qvel, success, _info = ik.solve(
                 left_target_pos=left_pos,
                 left_target_quat=left_quat,
                 right_target_pos=right_pos,
                 right_target_quat=right_quat,
-                head_target_pos=head_pos,
-                head_target_quat=head_quat,
+                head_target_pos=None,
+                head_target_quat=None,
                 current_qpos=current_qpos,
                 dt=rate.dt,
             )
+            ik_elapsed_ms = (time.perf_counter() - ik_start) * 1000.0
+            # print(f"[wbik_gui] IK solve took {ik_elapsed_ms:.3f} ms")
             if not success:
                 print(f"[wbc] IK failed: {_info}")
 
