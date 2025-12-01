@@ -14,14 +14,14 @@ import yaml
 
 from loop_rate_limiters import RateLimiter
 
-from .whole_body_ik import RBY1WholeBodyIK
-from .ee_targets import EETargets, _normalize_quaternion
-from control import (
+from rby1.whole_body_ik import RBY1WholeBodyIK
+from rby1.ee_targets import EETargets, _normalize_quaternion
+from . import (
+    AdmittanceController,
+    AdmittanceControllerConfig,
     Config as ControllerConfig,
     RealtimeDriver,
     RobotSnapshot,
-    AdmittanceController,
-    AdmittanceControllerConfig,
 )
 from ft.calibrator import FTCalibrator
 

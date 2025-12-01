@@ -15,7 +15,7 @@ PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from rby1.whole_body_control import RBY1WBC
+from control.rby1_wbc import RBY1WBC
 from rby1.ee_targets import EETargets
 from rby1.rby1_wbc_app import RBY1WBCApp
 from teleop.teleop_iphone import TeleopIphone
