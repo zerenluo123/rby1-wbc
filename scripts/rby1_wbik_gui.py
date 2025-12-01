@@ -2,6 +2,7 @@ from pathlib import Path
 import sys
 import time
 import math
+from typing import Optional
 import numpy as np
 import mujoco
 import mujoco.viewer
@@ -33,6 +34,51 @@ def main():
     def site_pos(site_name: str, qpos: np.ndarray) -> np.ndarray:
         pos, _ = site_pose(site_name, qpos)
         return pos
+
+    def _quat_angle_deg(q1: np.ndarray, q2: np.ndarray) -> float:
+        q1 = np.asarray(q1, dtype=float)
+        q2 = np.asarray(q2, dtype=float)
+        q1 = q1 / max(np.linalg.norm(q1), 1e-9)
+        q2 = q2 / max(np.linalg.norm(q2), 1e-9)
+        dot = float(np.clip(np.dot(q1, q2), -1.0, 1.0))
+        angle_rad = 2.0 * math.acos(abs(dot))
+        return math.degrees(angle_rad)
+
+    def _passes_incremental_safety(
+        current_qpos: np.ndarray,
+        left_pos: np.ndarray,
+        left_quat: np.ndarray,
+        right_pos: np.ndarray,
+        right_quat: np.ndarray,
+        head_pos: Optional[np.ndarray],
+        head_quat: Optional[np.ndarray],
+    ) -> bool:
+        # Hardcoded limits for the GUI-only WBIK preview
+        MAX_POS_DELTA = 0.05  # meters
+        MAX_ROT_DELTA_DEG = 5.0  # degrees
+
+        cur_left_pos, cur_left_quat = site_pose("end_effector_l", current_qpos)
+        cur_right_pos, cur_right_quat = site_pose("end_effector_r", current_qpos)
+
+        left_delta = float(np.linalg.norm(left_pos - cur_left_pos))
+        left_rot_delta = _quat_angle_deg(cur_left_quat, left_quat)
+        if left_delta > MAX_POS_DELTA or left_rot_delta > MAX_ROT_DELTA_DEG:
+            print(
+                f"[wbik_gui] reject left target: dpos={left_delta:.3f}m"
+                f" drot={left_rot_delta:.1f}deg (limits {MAX_POS_DELTA}m {MAX_ROT_DELTA_DEG}deg)"
+            )
+            return False
+
+        right_delta = float(np.linalg.norm(right_pos - cur_right_pos))
+        right_rot_delta = _quat_angle_deg(cur_right_quat, right_quat)
+        if right_delta > MAX_POS_DELTA or right_rot_delta > MAX_ROT_DELTA_DEG:
+            print(
+                f"[wbik_gui] reject right target: dpos={right_delta:.3f}m"
+                f" drot={right_rot_delta:.1f}deg (limits {MAX_POS_DELTA}m {MAX_ROT_DELTA_DEG}deg)"
+            )
+            return False
+
+        return True
 
     # Initialize from model default
     mujoco.mj_forward(model, data)
@@ -84,6 +130,18 @@ def main():
 
             # Run whole-body IK from current viewer state
             current_qpos = data.qpos.copy()
+            if not _passes_incremental_safety(
+                current_qpos,
+                left_pos,
+                left_quat,
+                right_pos,
+                right_quat,
+                head_pos,
+                head_quat,
+            ):
+                print("[wbik_gui] skipping IK due to incremental safety limits")
+                rate.sleep()
+                continue
             ik_start = time.perf_counter()
             sol_qpos, sol_qvel, success, _info = ik.solve(
                 left_target_pos=left_pos,

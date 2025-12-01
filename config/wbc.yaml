@@ -23,6 +23,12 @@ low_pass_freq_hz: 1
 base_error_gain: [0, 0, 0]  # TRI's IK runs at 500hz and ours at 100hz, so scale the gains by 5x
 base_velocity_gain: [0.1, 0.1, 0.1] # Might need to tune this more
 
+# Incremental safety limits (commands farther than these from current pose are rejected)
+incremental_safety:
+  enabled: true
+  max_translation_m: 0.1      # maximum linear delta per update
+  max_rotation_deg: 20.0       # maximum angular delta per update
+
 admittance:
   enabled: false
   desired_wrench:
