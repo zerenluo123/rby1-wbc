@@ -243,6 +243,7 @@ class RBY1WBC:
         config.command_timeout_us = int(
             round(max(command_timeout_sec, 0.0) * 1_000_000.0)
         )
+        config.low_pass_freq_hz = float(self.low_pass_freq_hz)
         controller = RealtimeDriver(config)
         controller.start()
         if not controller.wait_until_ready(timeout_sec=15.0):
