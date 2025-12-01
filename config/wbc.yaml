@@ -18,6 +18,35 @@ trajectory_frequency_hz: 10.0
 ik_frequency_hz: 100.0
 use_interpolation: true
 command_timeout_sec: 0.1
+low_pass_freq_hz: 1
 # Base control gains
 base_error_gain: [0.2, 0.2, 0.2]  # TRI's IK runs at 500hz and ours at 100hz, so scale the gains by 5x
 base_velocity_gain: [0.1, 0.1, 0.12] # Might need to tune this more
+
+admittance:
+  enabled: true
+  desired_wrench:
+    left: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    right: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  controller:
+    dt: 0.01
+    log_to_file: false
+    log_file_path: ""
+    alert_overrun: false
+    compliance6d:
+      stiffness: [300, 300, 300, 1, 1, 1]
+      damping: [7, 7, 7, 0.2, 0.2, 0.2]
+      inertia: [1, 1, 1, 0.005, 0.005, 0.005]
+      stiction: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    max_spring_force_magnitude: 50.0
+    max_spring_torque_magnitude: 4.0
+    direct_force_control_gains:
+      P_trans: 0.0
+      I_trans: 0.0
+      D_trans: 0.0
+      P_rot: 0.0
+      I_rot: 0.0
+      D_rot: 0.0
+    direct_force_control_I_limit: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  force_controlled_axes:
+    mode: translation_force

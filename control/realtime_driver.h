@@ -35,6 +35,12 @@ class RealtimeDriver {
     std::vector<double> joint_feedback_gain;
     std::vector<double> joint_feedforward_torque;
     Eigen::Matrix3d odom_SE2 = Eigen::Matrix3d::Identity();
+    Eigen::Matrix<double, 6, 1> left_ee_wrench =
+        Eigen::Matrix<double, 6, 1>::Zero();
+    Eigen::Matrix<double, 6, 1> right_ee_wrench =
+        Eigen::Matrix<double, 6, 1>::Zero();
+    bool left_ft_valid = false;
+    bool right_ft_valid = false;
     bool is_valid = false;
   };
 

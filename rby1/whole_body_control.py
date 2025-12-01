@@ -20,7 +20,10 @@ from control import (
     Config as ControllerConfig,
     RealtimeDriver,
     RobotSnapshot,
+    AdmittanceController,
+    AdmittanceControllerConfig,
 )
+from control.ft_calibrator import FTCalibrator
 
 from gripper.gripper import Gripper
 
@@ -88,6 +91,25 @@ class RBY1WBC:
         self.command_timeout_sec = require("command_timeout_sec")
         self.base_error_gain = np.asarray(require("base_error_gain"), dtype=float)
         self.base_velocity_gain = np.asarray(require("base_velocity_gain"), dtype=float)
+        self.low_pass_freq_hz = require("low_pass_freq_hz")
+
+        admittance_cfg = require("admittance")
+        self.admittance_enabled = bool(admittance_cfg.get("enabled", False))
+        self._admittance_initialized = False
+        self._admittance_controller_left: Optional[AdmittanceController] = None
+        self._admittance_controller_right: Optional[AdmittanceController] = None
+        self._admittance_config_left: Optional[AdmittanceControllerConfig] = None
+        self._admittance_config_right: Optional[AdmittanceControllerConfig] = None
+        self._admittance_Tr: Optional[np.ndarray] = None
+        self._admittance_n_af: int = 0
+        self._admittance_wrench_left = np.zeros(6, dtype=float)
+        self._admittance_wrench_right = np.zeros(6, dtype=float)
+
+        if self.admittance_enabled:
+            self._configure_admittance(admittance_cfg)
+            self._ft_calibrator = FTCalibrator()
+        else:
+            self._ft_calibrator = None
 
         # Initialize Controller loops
         self.ik_rate = RateLimiter(frequency=self.ik_frequency_hz, warn=False)
@@ -105,6 +127,14 @@ class RBY1WBC:
         self.model = mujoco.MjModel.from_xml_path(self.model_path)
         self.data = mujoco.MjData(self.model)
         mujoco.mj_forward(self.model, self.data)
+        self._left_ee_site_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_SITE, "end_effector_l"
+        )
+        self._right_ee_site_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_SITE, "end_effector_r"
+        )
+        if self._left_ee_site_id < 0 or self._right_ee_site_id < 0:
+            raise RuntimeError("End-effector body IDs could not be resolved in the MuJoCo model.")
 
         self.ik_solver = RBY1WholeBodyIK()
         self._build_joint_mapping()
@@ -179,6 +209,16 @@ class RBY1WBC:
     def get_latest_gripper_widths(self) -> Tuple[float, float]:
         return self.robot_state.load_gripper_widths()
 
+    def get_end_effector_pose(
+        self, snapshot: Optional[RobotSnapshot] = None
+    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """Returns (left_pose, right_pose) in the world frame for a snapshot."""
+        snap = snapshot if snapshot is not None else self.robot_state.load()
+        qpos = self.snapshot_to_qpos(snap)
+        if qpos is None:
+            return None
+        return self._compute_end_effector_world_pose(qpos)
+
     def wait_for_first_state(self, timeout_sec: float = 5.0) -> Optional[RobotSnapshot]:
         deadline = time.monotonic() + timeout_sec
         snapshot = None
@@ -252,6 +292,8 @@ class RBY1WBC:
         snapshot = self.wait_for_first_state()
         with self._model_lock:
             start_qpos = self._snapshot_to_qpos(snapshot)
+        if self.admittance_enabled:
+            self._initialize_admittance(start_qpos)
         start_body = self._compute_body_commands(start_qpos)
 
         delta = target_body - start_body
@@ -290,7 +332,47 @@ class RBY1WBC:
             if current_qpos is None or left_pos is None or right_pos is None:
                 self.ik_rate.sleep()
                 continue
+            
+            if self.admittance_enabled:
+                if not self._admittance_initialized:
+                    self._initialize_admittance(current_qpos)
 
+                left_pose_vec, right_pose_vec = self._compute_end_effector_world_pose(current_qpos)
+                if snapshot is None:
+                    print("[wbc] snapshot is None")
+                else:
+                    if not snapshot.left_ft_valid:
+                        print("[wbc] left_ft_valid is False")
+                        left_wrench = np.zeros(6, dtype=float)
+                    else:
+                        left_wrench = snapshot.left_ee_wrench
+                    if not snapshot.right_ft_valid:
+                        print("[wbc] right_ft_valid is False")
+                        right_wrench = np.zeros(6, dtype=float)
+                    else:
+                        right_wrench = snapshot.right_ee_wrench
+                left_wrench, right_wrench = self._ft_calibrator.calibrate(
+                    left_wrench,
+                    right_wrench,
+                    left_pose_vec,
+                    right_pose_vec,
+                )
+                self._admittance_controller_left.set_robot_status(left_pose_vec, left_wrench)
+                if left_quat is not None:
+                    left_pos, left_quat = self._apply_admittance(
+                        self._admittance_controller_left,
+                        left_pos,
+                        left_quat,
+                        self._admittance_wrench_left,
+                    )
+                self._admittance_controller_right.set_robot_status(right_pose_vec, right_wrench)
+                if right_quat is not None:
+                    right_pos, right_quat = self._apply_admittance(
+                        self._admittance_controller_right,
+                        right_pos,
+                        right_quat,
+                        self._admittance_wrench_right,
+                    )
             sol_qpos, sol_vel, success, _info = self.ik_solver.solve(
                 left_target_pos=left_pos,
                 left_target_quat=left_quat,
@@ -331,6 +413,151 @@ class RBY1WBC:
         ordered = torso_idxs + left_idxs + right_idxs + head_idxs
         body_targets = positions_sdk[ordered]
         return body_targets
+
+    def _configure_admittance(self, config: Optional[Mapping[str, Any]]) -> None:
+        controller_params = config.get("controller", {})
+        self._admittance_config_left = self._build_admittance_config(controller_params)
+        self._admittance_config_right = self._build_admittance_config(controller_params)
+
+        axes_config = config.get("force_controlled_axes", {})
+        self._admittance_Tr, self._admittance_n_af = self._parse_force_controlled_axes(
+            axes_config
+        )
+
+        desired_wrench_cfg = config.get("desired_wrench", {})
+        self._admittance_wrench_left = desired_wrench_cfg["left"]
+        self._admittance_wrench_right = desired_wrench_cfg["right"]
+
+    def _build_admittance_config(
+        self, params: Mapping[str, Any]
+    ) -> AdmittanceControllerConfig:
+        cfg = AdmittanceControllerConfig()
+        cfg.dt = float(params.get("dt", cfg.dt))
+        cfg.log_to_file = bool(params.get("log_to_file", cfg.log_to_file))
+        cfg.log_file_path = str(params.get("log_file_path", cfg.log_file_path))
+        cfg.alert_overrun = bool(params.get("alert_overrun", cfg.alert_overrun))
+
+        compliance = params.get("compliance6d", {})
+        cfg.compliance6d.stiffness = np.diag(compliance["stiffness"])
+        cfg.compliance6d.damping = np.diag(compliance["damping"])
+        cfg.compliance6d.inertia = np.diag(compliance["inertia"])
+        cfg.compliance6d.stiction = compliance["stiction"]
+
+        cfg.max_spring_force_magnitude = params["max_spring_force_magnitude"]
+        cfg.max_spring_torque_magnitude = params["max_spring_torque_magnitude"]
+
+        gains = params.get("direct_force_control_gains", {})
+        cfg.direct_force_control_gains.P_trans = gains["P_trans"]
+        cfg.direct_force_control_gains.I_trans = gains["I_trans"]
+        cfg.direct_force_control_gains.D_trans = gains["D_trans"]
+        cfg.direct_force_control_gains.P_rot = gains["P_rot"]
+        cfg.direct_force_control_gains.I_rot = gains["I_rot"]
+        cfg.direct_force_control_gains.D_rot = gains["D_rot"]
+
+        cfg.direct_force_control_I_limit = params["direct_force_control_I_limit"]
+        return cfg
+
+    def _parse_force_controlled_axes(
+        self, axes_config: Mapping[str, Any]
+    ) -> Tuple[np.ndarray, int]:
+        if not axes_config:
+            return np.eye(6, dtype=float), 6
+
+        if "matrix" in axes_config:
+            matrix = np.asarray(axes_config["matrix"], dtype=float).reshape(6, 6)
+            n_af = int(axes_config.get("n_af", 6))
+            return matrix, n_af
+
+        mode = str(axes_config.get("mode", "all_force")).lower()
+        if mode == "all_force":
+            return np.eye(6, dtype=float), 6
+        if mode == "translation_force":
+            return np.eye(6, dtype=float), 3
+        if mode == "rotation_force":
+            matrix = np.array(
+                [
+                    [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+                    [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                ],
+                dtype=float,
+            )
+            return matrix, 3
+        if mode in ("rigid", "velocity"):
+            return np.eye(6, dtype=float), 0
+
+        raise ValueError(f"Unsupported force_controlled_axes mode: {mode}")
+
+    def _initialize_admittance(self, current_qpos: np.ndarray) -> None:
+        self._admittance_controller_left = AdmittanceController()
+        self._admittance_controller_right = AdmittanceController()
+        left_pose_vec, right_pose_vec = self._compute_end_effector_world_pose(current_qpos)
+        self._admittance_controller_left.init(self._admittance_config_left, left_pose_vec)
+        self._admittance_controller_right.init(self._admittance_config_right, right_pose_vec)
+        zero_wrench = np.zeros(6, dtype=float)
+        self._admittance_controller_left.set_robot_status(left_pose_vec, zero_wrench)
+        self._admittance_controller_right.set_robot_status(right_pose_vec, zero_wrench)
+        self._admittance_controller_left.set_force_controlled_axis(
+            self._admittance_Tr, self._admittance_n_af
+        )
+        self._admittance_controller_right.set_force_controlled_axis(
+            self._admittance_Tr, self._admittance_n_af
+        )
+        self._admittance_controller_left.set_robot_reference(
+            left_pose_vec, self._admittance_wrench_left
+        )
+        self._admittance_controller_right.set_robot_reference(
+            right_pose_vec, self._admittance_wrench_right
+        )
+        self._admittance_initialized = True
+
+    def _compute_end_effector_world_pose(
+        self, qpos: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        with self._model_lock:
+            self.data.qpos[:] = qpos
+            mujoco.mj_forward(self.model, self.data)
+            left_rot = self.data.site_xmat[self._left_ee_site_id]
+            right_rot = self.data.site_xmat[self._right_ee_site_id]
+            left_quat = np.zeros(4)
+            mujoco.mju_mat2Quat(left_quat, left_rot)
+            right_quat = np.zeros(4)
+            mujoco.mju_mat2Quat(right_quat, right_rot)
+            left_pose = np.concatenate(
+                (
+                    self.data.site_xpos[self._left_ee_site_id],
+                    left_quat,
+                )
+            )
+            right_pose = np.concatenate(
+                (
+                    self.data.site_xpos[self._right_ee_site_id],
+                    right_quat,
+                )
+            )
+        return left_pose.astype(float), right_pose.astype(float)
+
+    def _apply_admittance(
+        self,
+        controller: AdmittanceController,
+        target_pos: np.ndarray,
+        target_quat: Optional[np.ndarray],
+        desired_wrench: np.ndarray,
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        if target_quat is None:
+            return target_pos, target_quat
+
+        controller.set_robot_reference(np.concatenate([target_pos, target_quat]), desired_wrench)
+        status, pose_cmd = controller.step()
+        if not status:
+            return target_pos, target_quat
+        pose_cmd = np.asarray(pose_cmd, dtype=float).reshape(7)
+        new_pos = pose_cmd[:3]
+        new_quat = _normalize_quaternion(pose_cmd[3:])
+        return new_pos, new_quat
 
     def _compute_base_twist_command(self, sol_qpos: np.ndarray, sol_qvel: np.ndarray, cur_qpos: np.ndarray) -> np.ndarray:
         measured_x = float(cur_qpos[0])
