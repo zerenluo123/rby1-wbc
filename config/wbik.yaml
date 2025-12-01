@@ -7,8 +7,10 @@ ee_ori_cost: 10000
 head_pos_cost: 0
 head_ori_cost: [0, 10000, 10000]
 torso_upright_ori_cost: 500
-posture_cost_main: 50
-posture_cost_head: 0.0
+nominal_posture_cost_main: 50
+nominal_posture_cost_head: 0.0
+current_posture_cost_main: 50
+current_posture_cost_head: 0.0
 com_over_base_pos_cost: 10.0
 com_target_height: 0.8
 base_ground_position_cost: [50.0, 50.0, 100000.0]
