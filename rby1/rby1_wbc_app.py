@@ -30,7 +30,7 @@ class RBY1WBCApp:
             snapshot = self.wbc.wait_for_first_state()
             qpos = self.wbc.snapshot_to_qpos(snapshot)
             self.visualizer = StateVisualizer(
-                model_path=self.model_path, initial_qpos=qpos, print_errors=True
+                model_path=self.model_path, initial_qpos=qpos, print_errors=False
             )
             self.viewer_rate = RateLimiter(frequency=60.0, warn=False)
 

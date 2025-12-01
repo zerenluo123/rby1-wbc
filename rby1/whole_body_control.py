@@ -374,6 +374,7 @@ class RBY1WBC:
                         right_quat,
                         self._admittance_wrench_right,
                     )
+            ik_start = time.perf_counter()
             sol_qpos, sol_vel, success, _info = self.ik_solver.solve(
                 left_target_pos=left_pos,
                 left_target_quat=left_quat,
@@ -384,6 +385,8 @@ class RBY1WBC:
                 current_qpos=current_qpos,
                 dt=self.ik_rate.dt,
             )
+            ik_elapsed_ms = (time.perf_counter() - ik_start) * 1000.0
+            # print(f"[wbc] IK solve took {ik_elapsed_ms:.3f} ms")
             if not success:
                 print(f"[wbc] IK failed: {_info}")
 

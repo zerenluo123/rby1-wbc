@@ -24,7 +24,7 @@ base_error_gain: [0.2, 0.2, 0.2]  # TRI's IK runs at 500hz and ours at 100hz, so
 base_velocity_gain: [0.1, 0.1, 0.12] # Might need to tune this more
 
 admittance:
-  enabled: true
+  enabled: false
   desired_wrench:
     left: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     right: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
