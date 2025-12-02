@@ -388,7 +388,7 @@ class RBY1WBC:
         if max_delta < 1e-6:
             self.controller.set_body_position_targets(target_body.tolist())
         else:
-            INIT_POSITION_MAX_STEP_DELTA = 0.02
+            INIT_POSITION_MAX_STEP_DELTA = 0.01
             steps = max(10, int(np.ceil(max_delta / INIT_POSITION_MAX_STEP_DELTA)))
             for step in range(1, steps + 1):
                 alpha = step / steps
