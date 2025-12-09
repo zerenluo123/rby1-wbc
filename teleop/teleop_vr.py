@@ -84,6 +84,7 @@ class TeleopVR:
         self.session_name = generate_session_name()
         self._session_logger = SessionLogger(self.session_name)
         self._trajectory_recorder = TrajectoryRecorder(self.session_name, enabled=save_trajectory)
+        self._block_until_release = False
 
     def initialize(self) -> bool:
         rv = False
@@ -188,6 +189,9 @@ class TeleopVR:
         if not controller_state:
             return None
 
+        if self._check_release_gate(controller_state):
+            return None
+
         self._update_controller_poses(controller_state)
         self._handle_button_events()
         if not self.vr_state.is_initialized or self.vr_state.is_stopped:
@@ -205,8 +209,8 @@ class TeleopVR:
         right_pos, right_quat = self._matrix_to_pose(right_target_pose)
 
         head_pos = head_quat = None
-        if head_target_pose is not None:
-            head_pos, head_quat = self._matrix_to_pose(head_target_pose)
+        # if head_target_pose is not None:
+        #     head_pos, head_quat = self._matrix_to_pose(head_target_pose)
 
         targets = EETargets(
             left_pos=left_pos,
@@ -220,6 +224,33 @@ class TeleopVR:
         )
         self._trajectory_recorder.log_target(targets, timestamp=time.time())
         return targets
+
+    def on_target_rejected(self) -> None:
+        # Keep anchors as-is; require a release/re-grip to re-baseline controller deltas.
+        with self._controller_lock:
+            # Pause target streaming until both grips are released then re-pressed.
+            self.vr_state.is_right_following = False
+            self.vr_state.is_left_following = False
+            self.vr_state.is_torso_following = False
+            self._block_until_release = True
+            logging.info("Target rejected: release both grips to resume teleop.")
+
+    def _check_release_gate(self, controller_state: dict) -> bool:
+        """Return True if target streaming should pause until both grips are released."""
+        hands = controller_state.get("hands", {})
+        right = hands.get("right", {})
+        left = hands.get("left", {})
+        right_grip = float(right.get("buttons", {}).get("grip", 0.0) or 0.0)
+        left_grip = float(left.get("buttons", {}).get("grip", 0.0) or 0.0)
+
+        released = right_grip <= 0.1 and left_grip <= 0.1
+
+        if self._block_until_release:
+            if released:
+                self._block_until_release = False
+            return True
+
+        return False
 
     def _initialize_locked_poses(self) -> None:
         self.vr_state.right_hand_locked_pose = self.vr_state.right_ee_current_pose

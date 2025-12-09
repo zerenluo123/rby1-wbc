@@ -31,6 +31,11 @@ class RBY1WBCTeleop(RBY1WBCApp):
     def get_target(self) -> Optional[EETargets]:
         return self.teleop.compute_target()
 
+    def on_target_rejected(self, target: EETargets) -> None:
+        handler = getattr(self.teleop, "on_target_rejected", None)
+        if callable(handler):
+            handler()
+
 def build_teleop(mode:str, wbc: RBY1WBC, config: Dict[str, Any], save_trajectory: bool) -> Any:
     if mode == "vr":
         local_ip = config.get("local_ip")
