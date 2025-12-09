@@ -53,6 +53,27 @@ class RBY1WBCGui(RBY1WBCApp):
             timestamp=time.monotonic(),
         )
 
+    def on_target_rejected(self, target: EETargets) -> None:
+        if self.visualizer is None or self.mocap_ids is None:
+            return
+
+        snapshot = self.wbc.get_latest_robot_state()
+        qpos = self.wbc.snapshot_to_qpos(snapshot)
+        if qpos is None:
+            return
+
+        with self._visualizer_lock:
+            left_pos, left_quat = self.visualizer.site_pose("end_effector_l", qpos)
+            right_pos, right_quat = self.visualizer.site_pose("end_effector_r", qpos)
+            head_pos, head_quat = self.visualizer.site_pose("head", qpos)
+
+            self.visualizer.data.mocap_pos[self.mocap_ids["left"]] = left_pos
+            self.visualizer.data.mocap_pos[self.mocap_ids["right"]] = right_pos
+            self.visualizer.data.mocap_pos[self.mocap_ids["head"]] = head_pos
+            self.visualizer.data.mocap_quat[self.mocap_ids["left"]] = left_quat
+            self.visualizer.data.mocap_quat[self.mocap_ids["right"]] = right_quat
+            self.visualizer.data.mocap_quat[self.mocap_ids["head"]] = head_quat
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="RBY1 whole-body IK GUI decoupled from WBC thread")
     args = parser.parse_args()

@@ -197,15 +197,17 @@ class RBY1WBC:
         head_pos: Optional[np.ndarray] = None,
         head_quat: Optional[np.ndarray] = None,
         timestamp: Optional[float] = None,
-    ) -> None:
+    ) -> bool:
         if not self._passes_incremental_safety(
             left_pos,
             left_quat,
             right_pos,
             right_quat,
+            head_pos,
+            head_quat,
         ):
             print("[wbc] target command rejected by incremental safety.")
-            return
+            return False
 
         self.ee_targets.set_targets(
             duration,
@@ -219,6 +221,7 @@ class RBY1WBC:
             head_quat=head_quat,
             timestamp=timestamp,
         )
+        return True
 
     def _passes_incremental_safety(
         self,

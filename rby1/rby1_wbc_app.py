@@ -26,6 +26,7 @@ class RBY1WBCApp:
 
         self.visualizer: Optional[StateVisualizer] = None
         self.viewer_rate: Optional[RateLimiter] = None
+        self._visualizer_lock = threading.Lock()
         if not self.headless:
             snapshot = self.wbc.wait_for_first_state()
             qpos = self.wbc.snapshot_to_qpos(snapshot)
@@ -45,12 +46,17 @@ class RBY1WBCApp:
     def get_target(self) -> Optional[EETargets]:
         raise NotImplementedError
 
+    def on_target_rejected(self, target: EETargets) -> None:
+        """Hook for subclasses to respond when a target is rejected."""
+        return
+
     # ----- Runtime --------------------------------------------------------------
     def visualize_loop(self) -> None:
         snapshot = self.wbc.get_latest_robot_state()
         qpos = self.wbc.snapshot_to_qpos(snapshot)
         targets = self.wbc.ee_targets.get_target()
-        self.visualizer.render(qpos, targets)
+        with self._visualizer_lock:
+            self.visualizer.render(qpos, targets)
         self.viewer_rate.sleep()
 
     def trajectory_loop(self) -> None:
@@ -62,7 +68,7 @@ class RBY1WBCApp:
 
             duration = target.duration if target.duration and target.duration > 0.0 else self.trajectory_rate.dt
             timestamp = target.timestamp if target.timestamp and target.timestamp > 0.0 else time.monotonic()
-            self.wbc.update_targets(
+            accepted = self.wbc.update_targets(
                 duration,
                 left_pos=target.left_pos,
                 left_quat=target.left_quat,
@@ -74,6 +80,8 @@ class RBY1WBCApp:
                 head_quat=target.head_quat,
                 timestamp=timestamp,
             )
+            if not accepted:
+                self.on_target_rejected(target)
             self.trajectory_rate.sleep()
 
         self._stop_event.set()
