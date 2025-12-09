@@ -54,8 +54,8 @@ def main():
         head_quat: Optional[np.ndarray],
     ) -> bool:
         # Hardcoded limits for the GUI-only WBIK preview
-        MAX_POS_DELTA = 0.05  # meters
-        MAX_ROT_DELTA_DEG = 5.0  # degrees
+        MAX_POS_DELTA = 0.1  # meters
+        MAX_ROT_DELTA_DEG = 20.0  # degrees
 
         cur_left_pos, cur_left_quat = site_pose("end_effector_l", current_qpos)
         cur_right_pos, cur_right_quat = site_pose("end_effector_r", current_qpos)
@@ -139,9 +139,17 @@ def main():
                 head_pos,
                 head_quat,
             ):
-                print("[wbik_gui] skipping IK due to incremental safety limits")
-                rate.sleep()
-                continue
+                print("[wbik_gui] resetting targets to current pose due to incremental safety limits")
+                # Snap mocap targets back to current EE poses to keep the UI responsive.
+                left_pos, left_quat = site_pose("end_effector_l", current_qpos)
+                right_pos, right_quat = site_pose("end_effector_r", current_qpos)
+                head_pos, head_quat = site_pose("head", current_qpos)
+                data.mocap_pos[ee_l_mid] = left_pos
+                data.mocap_pos[ee_r_mid] = right_pos
+                data.mocap_pos[head_mid] = head_pos
+                data.mocap_quat[ee_l_mid] = left_quat
+                data.mocap_quat[ee_r_mid] = right_quat
+                data.mocap_quat[head_mid] = head_quat
             ik_start = time.perf_counter()
             sol_qpos, sol_qvel, success, _info = ik.solve(
                 left_target_pos=left_pos,
