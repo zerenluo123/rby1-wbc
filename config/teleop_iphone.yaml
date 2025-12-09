@@ -2,3 +2,10 @@
 host: "0.0.0.0"   # Address to bind the local pose server
 port: 5555        # TCP port for the iPhone app to connect
 portrait: true    # Apply portrait-mode rotation to incoming poses
+
+# Teleop smoothing and per-step clamps (applied to incoming targets before IK)
+teleop_filter:
+  enabled: true
+  output_frequency_hz: 120.0       # smoothing cutoff; higher follows input faster
+  max_translation_m_per_sec: 1.2   # per-axis speed limit used to clamp each step
+  max_rotation_deg_per_sec: 240.0  # angular speed limit used to clamp each step

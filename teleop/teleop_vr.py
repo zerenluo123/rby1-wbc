@@ -16,6 +16,12 @@ from demo.trajectory_recorder import TrajectoryRecorder
 from .session_logger import SessionLogger, generate_session_name
 from .vr_control_state import VRControlState
 from rby1.ee_targets import EETargets
+from .target_filter import (
+    PoseFilter,
+    TeleopFilterConfig,
+    load_teleop_filter_config,
+    DEFAULT_TELEOP_VR_CONFIG,
+)
 
 
 logging.basicConfig(
@@ -56,12 +62,16 @@ class TeleopVR:
         local_port: int = DEFAULT_LOCAL_PORT,
         meta_quest_port: int = DEFAULT_META_QUEST_PORT,
         save_trajectory: bool = False,
+        filter_config: Optional[TeleopFilterConfig] = None,
     ):
         self.wbc = wbc
         self.local_ip = local_ip
         self.meta_quest_ip = meta_quest_ip
         self.local_port = int(local_port)
         self.meta_quest_port = int(meta_quest_port)
+
+        self._target_filter_config = filter_config or load_teleop_filter_config(DEFAULT_TELEOP_VR_CONFIG)
+        self._target_filter = PoseFilter(self._target_filter_config)
 
         self.vr_state = VRControlState()
         self._controller_lock = threading.Lock()
@@ -208,9 +218,14 @@ class TeleopVR:
         left_pos, left_quat = self._matrix_to_pose(left_target_pose)
         right_pos, right_quat = self._matrix_to_pose(right_target_pose)
 
+        now = time.monotonic()
+        left_pos, left_quat = self._target_filter.filter("left", left_pos, left_quat, now)
+        right_pos, right_quat = self._target_filter.filter("right", right_pos, right_quat, now)
+
         head_pos = head_quat = None
         # if head_target_pose is not None:
         #     head_pos, head_quat = self._matrix_to_pose(head_target_pose)
+        #     head_pos, head_quat = self._target_filter.filter("head", head_pos, head_quat, now)
 
         targets = EETargets(
             left_pos=left_pos,
@@ -234,6 +249,7 @@ class TeleopVR:
             self.vr_state.is_torso_following = False
             self._block_until_release = True
             logging.info("Target rejected: release both grips to resume teleop.")
+        self._target_filter.reset()
 
     def _check_release_gate(self, controller_state: dict) -> bool:
         """Return True if target streaming should pause until both grips are released."""
@@ -257,6 +273,7 @@ class TeleopVR:
         self.vr_state.left_hand_locked_pose = self.vr_state.left_ee_current_pose
         self.vr_state.head_locked_pose = self.vr_state.head_ee_current_pose
         self.vr_state.torso_locked_pose = self.vr_state.torso_current_pose
+        self._target_filter.reset()
         self._has_initial_pose = True
 
     def _get_controller_state(self) -> dict:

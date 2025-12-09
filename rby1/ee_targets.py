@@ -1,74 +1,17 @@
 from __future__ import annotations
 
-import math
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Optional, Tuple, Union
 
 import numpy as np
-
-
-def _lerp_value(
-    start: Optional[Union[np.ndarray, float]],
-    end: Optional[Union[np.ndarray, float]],
-    alpha: float,
-):
-    if end is None:
-        return None
-    if start is None:
-        if isinstance(end, np.ndarray):
-            return end.copy()
-        return float(end)
-    alpha_clamped = max(0.0, min(1.0, alpha))
-    if isinstance(end, np.ndarray):
-        return (1.0 - alpha_clamped) * start + alpha_clamped * end
-    return float((1.0 - alpha_clamped) * start + alpha_clamped * end)
+from rby1.pose_utils import lerp_value, slerp_quaternion, normalize_quaternion
 
 
 def _normalize_quaternion(quat: np.ndarray) -> np.ndarray:
-    norm = np.linalg.norm(quat)
-    if norm < 1e-9:
-        return np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
-    return quat / norm
-
-
-def _slerp_quaternion(
-    start: Optional[np.ndarray],
-    end: Optional[np.ndarray],
-    alpha: float,
-) -> Optional[np.ndarray]:
-    if end is None:
-        return None
-    if start is None:
-        return end.copy()
-
-    start_norm = _normalize_quaternion(start)
-    end_norm = _normalize_quaternion(end)
-
-    dot = float(np.dot(start_norm, end_norm))
-    if dot < 0.0:
-        end_norm = -end_norm
-        dot = -dot
-    dot = max(-1.0, min(1.0, dot))
-
-    if dot > 0.9995:
-        result = start_norm + alpha * (end_norm - start_norm)
-        return _normalize_quaternion(result)
-
-    theta_0 = math.acos(dot)
-    sin_theta_0 = math.sin(theta_0)
-    if sin_theta_0 < 1e-6:
-        return end_norm.copy()
-
-    alpha_clamped = max(0.0, min(1.0, alpha))
-    theta = theta_0 * alpha_clamped
-    sin_theta = math.sin(theta)
-
-    s0 = math.cos(theta) - dot * sin_theta / sin_theta_0
-    s1 = sin_theta / sin_theta_0
-    result = s0 * start_norm + s1 * end_norm
-    return _normalize_quaternion(result)
+    """Backward-compatible alias for pose_utils.normalize_quaternion."""
+    return normalize_quaternion(quat)
 
 
 @dataclass
@@ -170,16 +113,16 @@ class EETargets:
             elapsed = max(0.0, current_time - self.timestamp)
             alpha = min(1.0, elapsed / duration) if duration > 0.0 else 1.0
 
-            lt_p = _lerp_value(self.left_pos_start, self.left_pos, alpha)
-            lt_q = _slerp_quaternion(self.left_quat_start, self.left_quat, alpha)
-            lw = _lerp_value(self.left_width_start, self.left_width, alpha)
+            lt_p = lerp_value(self.left_pos_start, self.left_pos, alpha)
+            lt_q = slerp_quaternion(self.left_quat_start, self.left_quat, alpha)
+            lw = lerp_value(self.left_width_start, self.left_width, alpha)
 
-            rt_p = _lerp_value(self.right_pos_start, self.right_pos, alpha)
-            rt_q = _slerp_quaternion(self.right_quat_start, self.right_quat, alpha)
-            rw = _lerp_value(self.right_width_start, self.right_width, alpha)
+            rt_p = lerp_value(self.right_pos_start, self.right_pos, alpha)
+            rt_q = slerp_quaternion(self.right_quat_start, self.right_quat, alpha)
+            rw = lerp_value(self.right_width_start, self.right_width, alpha)
 
-            hp = _lerp_value(self.head_pos_start, self.head_pos, alpha)
-            hq = _slerp_quaternion(self.head_quat_start, self.head_quat, alpha)
+            hp = lerp_value(self.head_pos_start, self.head_pos, alpha)
+            hq = slerp_quaternion(self.head_quat_start, self.head_quat, alpha)
 
         return lt_p, lt_q, lw, rt_p, rt_q, rw, hp, hq
 
@@ -208,4 +151,4 @@ class EETargets:
         return lt_p, lt_q, lw, rt_p, rt_q, rw, hp, hq
 
 
-__all__ = ["EETargets"]
+__all__ = ["EETargets", "_normalize_quaternion"]

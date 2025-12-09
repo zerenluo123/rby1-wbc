@@ -26,10 +26,12 @@ if PROJECT_ROOT not in sys.path:
 from rby1.ee_targets import EETargets
 from rby1.whole_body_ik import RBY1WholeBodyIK
 from teleop.teleop_vr import TeleopVR
+from teleop.target_filter import TeleopFilterConfig
 
 
 DEFAULT_MODEL = Path(PROJECT_ROOT) / "model" / "rby1" / "rby1.xml"
 DEFAULT_WBC_CONFIG = Path(PROJECT_ROOT) / "config" / "wbc.yaml"
+DEFAULT_TELEOP_VR_CONFIG = Path(PROJECT_ROOT) / "config" / "teleop_vr.yaml"
 
 
 @dataclass
@@ -351,6 +353,16 @@ def main() -> None:
                 init_config = yaml.safe_load(fh) or {}
         except Exception as exc:
             print(f"Warning: failed to load {DEFAULT_WBC_CONFIG}: {exc}")
+    teleop_config: dict = {}
+    if DEFAULT_TELEOP_VR_CONFIG.exists():
+        try:
+            with DEFAULT_TELEOP_VR_CONFIG.open("r", encoding="utf-8") as fh:
+                teleop_config = yaml.safe_load(fh) or {}
+        except Exception as exc:
+            print(f"Warning: failed to load {DEFAULT_TELEOP_VR_CONFIG}: {exc}")
+    teleop_filter_config = TeleopFilterConfig.from_mapping(teleop_config.get("teleop_filter"))
+    if teleop_config.get("teleop_filter") is None and init_config:
+        teleop_filter_config = TeleopFilterConfig.from_mapping(init_config.get("teleop_filter"))
     if init_config:
         _apply_initial_configuration(model, data, ik_solver, init_config)
     gripper_indices = _get_gripper_indices(model)
@@ -381,6 +393,7 @@ def main() -> None:
         local_port=args.local_port,
         meta_quest_port=args.meta_quest_port,
         save_trajectory=args.save_trajectory,
+        filter_config=teleop_filter_config,
     )
     if not teleop.initialize():
         raise RuntimeError("Failed to initialize the Meta Quest teleop interface.")

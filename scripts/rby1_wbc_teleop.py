@@ -20,6 +20,7 @@ from rby1.ee_targets import EETargets
 from rby1.rby1_wbc_app import RBY1WBCApp
 from teleop.teleop_iphone import TeleopIphone
 from teleop.teleop_vr import TeleopVR
+from teleop.target_filter import TeleopFilterConfig
 
 
 class RBY1WBCTeleop(RBY1WBCApp):
@@ -36,7 +37,13 @@ class RBY1WBCTeleop(RBY1WBCApp):
         if callable(handler):
             handler()
 
-def build_teleop(mode:str, wbc: RBY1WBC, config: Dict[str, Any], save_trajectory: bool) -> Any:
+def build_teleop(
+    mode: str,
+    wbc: RBY1WBC,
+    config: Dict[str, Any],
+    save_trajectory: bool,
+    filter_config: TeleopFilterConfig,
+) -> Any:
     if mode == "vr":
         local_ip = config.get("local_ip")
         meta_quest_ip = config.get("meta_quest_ip")
@@ -51,6 +58,7 @@ def build_teleop(mode:str, wbc: RBY1WBC, config: Dict[str, Any], save_trajectory
             local_port=local_port,
             meta_quest_port=meta_quest_port,
             save_trajectory=save_trajectory,
+            filter_config=filter_config,
         )
     elif mode == "iphone":
         host = str(config.get("host", "0.0.0.0"))
@@ -62,6 +70,7 @@ def build_teleop(mode:str, wbc: RBY1WBC, config: Dict[str, Any], save_trajectory
             port=port,
             save_trajectory=save_trajectory,
             use_portrait_mode=portrait,
+            filter_config=filter_config,
         )
     else:
         raise ValueError(f"Unsupported teleop mode: {mode}")
@@ -104,10 +113,18 @@ def main() -> None:
     if not isinstance(config, dict):
         raise ValueError(f"WBC config at {config_path} must be a mapping.")
 
+    teleop_filter_config = TeleopFilterConfig.from_mapping(config.get("teleop_filter"))
+
     # Run 
     wbc = RBY1WBC()
     wbc.start()
-    teleop = build_teleop(mode, wbc, config, save_trajectory=save_trajectory)
+    teleop = build_teleop(
+        mode,
+        wbc,
+        config,
+        save_trajectory=save_trajectory,
+        filter_config=teleop_filter_config,
+    )
     if not teleop.initialize():
         wbc.stop()
         raise RuntimeError("Teleoperation can not be initialized!")
