@@ -27,7 +27,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Deque, Dict, Iterable, Optional, Union
+from typing import Any, Deque, Dict, Iterable, Optional, Sequence
 
 import mujoco
 import numpy as np
@@ -55,6 +55,15 @@ class RobotObservation:
     head_tf: np.ndarray
     left_width: float
     right_width: float
+
+
+@dataclass(frozen=True)
+class ScheduledAction:
+    """Action queued for execution at a wall-clock timestamp."""
+
+    timestamp: float
+    duration: float
+    payload: Dict[str, np.ndarray]
 
 
 @dataclass(frozen=True)
@@ -115,228 +124,6 @@ def _posevec_to_tf(pose: np.ndarray) -> np.ndarray:
     tf[:, :3, :3] = Rotation.from_rotvec(pose[:, 3:]).as_matrix()
     return tf
 
-
-def _pose_distance(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
-    a = np.asarray(a, dtype=float)
-    b = np.asarray(b, dtype=float)
-    pos_dist = np.linalg.norm(b[:3] - a[:3])
-    rot_a = Rotation.from_rotvec(a[3:])
-    rot_b = Rotation.from_rotvec(b[3:])
-    rot_dist = (rot_b * rot_a.inv()).magnitude()
-    return pos_dist, rot_dist
-
-
-class PoseTrajectoryInterpolator:
-    def __init__(self, times: np.ndarray, poses: np.ndarray):
-        times = np.asarray(times, dtype=float)
-        poses = np.asarray(poses, dtype=float)
-        assert times.ndim == 1 and poses.ndim == 2
-        assert times.size == poses.shape[0]
-        if times.size == 1:
-            self._single_step = True
-            self._times = times
-            self._poses = poses
-        else:
-            assert np.all(times[1:] >= times[:-1])
-            self._single_step = False
-            self._times = times
-            self._pos_interp = interp1d(times, poses[:, :3], axis=0, assume_sorted=True)
-            self._rot_interp = Slerp(times, Rotation.from_rotvec(poses[:, 3:]))
-
-    @property
-    def times(self) -> np.ndarray:
-        return self._times
-
-    @property
-    def poses(self) -> np.ndarray:
-        if self._single_step:
-            return self._poses
-        poses = np.zeros((len(self._times), 6), dtype=float)
-        poses[:, :3] = self._pos_interp(self._times)
-        poses[:, 3:] = self._rot_interp(self._times).as_rotvec()
-        return poses
-
-    def trim(self, start_t: float, end_t: float) -> "PoseTrajectoryInterpolator":
-        start_t = float(start_t)
-        end_t = float(end_t)
-        assert start_t <= end_t
-        times = self.times
-        keep = (start_t < times) & (times < end_t)
-        keep_times = times[keep]
-        new_times = np.concatenate([[start_t], keep_times, [end_t]])
-        new_times = np.unique(new_times)
-        poses = self(new_times)
-        return PoseTrajectoryInterpolator(new_times, poses)
-
-    def drive_to_waypoint(
-        self,
-        pose: np.ndarray,
-        time: float,
-        curr_time: float,
-        max_pos_speed: float,
-        max_rot_speed: float,
-    ) -> "PoseTrajectoryInterpolator":
-        pose = np.asarray(pose, dtype=float)
-        time = max(float(time), float(curr_time))
-        curr_pose = self(curr_time)
-        pos_dist, rot_dist = _pose_distance(curr_pose, pose)
-        duration = time - curr_time
-        if max_pos_speed > 0:
-            duration = max(duration, pos_dist / max_pos_speed)
-        if max_rot_speed > 0:
-            duration = max(duration, rot_dist / max_rot_speed)
-        end_time = curr_time + max(duration, 0.0)
-        trimmed = self.trim(curr_time, curr_time)
-        new_times = np.append(trimmed.times, [end_time], axis=0)
-        new_poses = np.append(trimmed.poses, [pose], axis=0)
-        return PoseTrajectoryInterpolator(new_times, new_poses)
-
-    def schedule_waypoint(
-        self,
-        pose: np.ndarray,
-        time: float,
-        curr_time: Optional[float],
-        last_waypoint_time: Optional[float],
-        max_pos_speed: float,
-        max_rot_speed: float,
-    ) -> "PoseTrajectoryInterpolator":
-        pose = np.asarray(pose, dtype=float)
-        time = float(time)
-        start_time = self.times[0]
-        end_time = self.times[-1]
-        if curr_time is not None:
-            curr_time = float(curr_time)
-            if time <= curr_time:
-                return self
-            start_time = max(start_time, curr_time)
-            if last_waypoint_time is not None:
-                if time <= last_waypoint_time:
-                    end_time = curr_time
-                else:
-                    end_time = max(curr_time, last_waypoint_time)
-            else:
-                end_time = curr_time
-        end_time = min(end_time, time)
-        start_time = min(start_time, end_time)
-        trimmed = self.trim(start_time, end_time)
-        duration = time - end_time
-        end_pose = trimmed(end_time)
-        pos_dist, rot_dist = _pose_distance(pose, end_pose)
-        if max_pos_speed > 0:
-            duration = max(duration, pos_dist / max_pos_speed)
-        if max_rot_speed > 0:
-            duration = max(duration, rot_dist / max_rot_speed)
-        final_time = end_time + max(duration, 0.0)
-        new_times = np.append(trimmed.times, [final_time], axis=0)
-        new_poses = np.append(trimmed.poses, [pose], axis=0)
-        return PoseTrajectoryInterpolator(new_times, new_poses)
-
-    def __call__(self, t: Union[float, np.ndarray]) -> np.ndarray:
-        if self._single_step:
-            if np.isscalar(t):
-                return self._poses[0]
-            return np.tile(self._poses[0], (len(t), 1))
-        if np.isscalar(t):
-            query = np.array([t], dtype=float)
-            single = True
-        else:
-            query = np.asarray(t, dtype=float)
-            single = False
-        query = np.clip(query, self._times[0], self._times[-1])
-        poses = np.zeros((len(query), 6), dtype=float)
-        poses[:, :3] = self._pos_interp(query)
-        poses[:, 3:] = self._rot_interp(query).as_rotvec()
-        if single:
-            return poses[0]
-        return poses
-
-
-
-class ScalarTrajectoryInterpolator:
-    def __init__(self, times: np.ndarray, values: np.ndarray):
-        times = np.asarray(times, dtype=float).reshape(-1)
-        values = np.asarray(values, dtype=float).reshape(-1)
-        assert times.shape[0] == values.shape[0]
-        self._times = times
-        self._values = values
-
-    @property
-    def times(self) -> np.ndarray:
-        return self._times
-
-    @property
-    def values(self) -> np.ndarray:
-        return self._values
-
-    def trim(self, start_t: float, end_t: float) -> "ScalarTrajectoryInterpolator":
-        start_t = float(start_t)
-        end_t = float(end_t)
-        assert start_t <= end_t
-        times = self._times
-        keep = (start_t < times) & (times < end_t)
-        keep_times = times[keep]
-        new_times = np.concatenate([[start_t], keep_times, [end_t]])
-        new_times = np.unique(new_times)
-        values = self(new_times)
-        return ScalarTrajectoryInterpolator(new_times, values)
-
-    def drive_to_waypoint(self, value: float, time: float, curr_time: float, max_speed: float) -> "ScalarTrajectoryInterpolator":
-        value = float(value)
-        curr_time = float(curr_time)
-        time = max(float(time), curr_time)
-        trimmed = self.trim(curr_time, curr_time)
-        new_times = np.append(trimmed.times, [time], axis=0)
-        new_values = np.append(trimmed.values, [value], axis=0)
-        return ScalarTrajectoryInterpolator(new_times, new_values)
-
-    def schedule_waypoint(
-        self,
-        value: float,
-        time: float,
-        curr_time: Optional[float],
-        last_waypoint_time: Optional[float],
-        max_speed: float,
-    ) -> "ScalarTrajectoryInterpolator":
-        time = float(time)
-        start_time = self._times[0]
-        end_time = self._times[-1]
-        if curr_time is not None:
-            curr_time = float(curr_time)
-            if time <= curr_time:
-                return self
-            start_time = max(start_time, curr_time)
-            if last_waypoint_time is not None:
-                last_waypoint_time = float(last_waypoint_time)
-                if time <= last_waypoint_time:
-                    end_time = curr_time
-                else:
-                    end_time = max(curr_time, last_waypoint_time)
-            else:
-                end_time = curr_time
-        end_time = min(end_time, time)
-        start_time = min(start_time, end_time)
-        trimmed = self.trim(start_time, end_time)
-        end_value = float(trimmed(end_time))
-        duration = time - end_time
-        if max_speed > 0:
-            delta = abs(float(value) - end_value)
-            duration = max(duration, delta / max_speed)
-        final_time = end_time + max(duration, 0.0)
-        new_times = np.append(trimmed.times, [final_time], axis=0)
-        new_values = np.append(trimmed.values, [float(value)], axis=0)
-        return ScalarTrajectoryInterpolator(new_times, new_values)
-
-    def __call__(self, t: Union[float, np.ndarray]) -> np.ndarray | float:
-        if np.isscalar(t):
-            query = float(t)
-            if len(self._times) == 1:
-                return float(self._values[0])
-            return float(np.interp(query, self._times, self._values))
-        query = np.asarray(t, dtype=float)
-        if len(self._times) == 1:
-            return np.full_like(query, float(self._values[0]))
-        return np.interp(query, self._times, self._values)
-    
 class _SimBackend:
     """Minimal drop-in replacement for :class:`RBY1WBC` used for debugging."""
 
@@ -417,7 +204,6 @@ class _SimBackend:
         head_pos: Optional[np.ndarray] = None,
         head_quat: Optional[np.ndarray] = None,
         duration: float = 0.1,
-        timestamp: Optional[float] = None,
     ) -> None:
         sol_qpos, sol_vel, success, _ = self._ik.solve(
             left_target_pos=left_pos,
@@ -531,25 +317,9 @@ class RBY1PolicyRobot:
         self._buffer_thread: Optional[threading.Thread] = None
         self._command_thread: Optional[threading.Thread] = None
         self._command_stop = threading.Event()
-        self._traj_lock = threading.Lock()
-        self._pose_traj: Dict[str, Optional[PoseTrajectoryInterpolator]] = {
-            "left": None,
-            "right": None,
-            "head": None,
-        }
-        self._pose_last_waypoint: Dict[str, Optional[float]] = {
-            "left": None,
-            "right": None,
-            "head": None,
-        }
-        self._width_traj: Dict[str, Optional[ScalarTrajectoryInterpolator]] = {
-            "left": None,
-            "right": None,
-        }
-        self._width_last_waypoint: Dict[str, Optional[float]] = {
-            "left": None,
-            "right": None,
-        }
+        self._action_lock = threading.Lock()
+        self._action_buffer: Deque[ScheduledAction] = deque()
+        self._last_executed_action: Optional[ScheduledAction] = None
         self._max_pos_speed = float(max_pos_speed)
         self._max_rot_speed = float(max_rot_speed)
         self._max_gripper_speed = float(max_gripper_speed)
@@ -594,6 +364,7 @@ class RBY1PolicyRobot:
         """Stop controller threads and flush buffers."""
 
         self._stop_event.set()
+        self._command_stop.set()
         if self._buffer_thread is not None:
             self._buffer_thread.join(timeout=1.0)
             self._buffer_thread = None
@@ -605,13 +376,9 @@ class RBY1PolicyRobot:
             self._buffer.clear()
         self._buffer_ready.clear()
         self._command_stop.clear()
-        with self._traj_lock:
-            for key in self._pose_traj:
-                self._pose_traj[key] = None
-                self._pose_last_waypoint[key] = None
-            for key in self._width_traj:
-                self._width_traj[key] = None
-                self._width_last_waypoint[key] = None
+        with self._action_lock:
+            self._action_buffer.clear()
+            self._last_executed_action = None
 
     def wait_until_ready(self, timeout: float = 5.0) -> None:
         """Block until the first valid snapshot is available."""
@@ -657,8 +424,12 @@ class RBY1PolicyRobot:
             now = time.monotonic()
             query_time = now + self._command_lookahead
             payload = self._sample_scheduled_payload(query_time)
-            if payload is not None:
+            if payload is not None and {"left_tf", "right_tf"}.issubset(payload):
                 self.apply_action(payload, duration=command_dt, timestamp=now)
+                with self._action_lock:
+                    # Store the last command actually sent to the robot for smoother interpolation.
+                    payload_copy = {k: np.asarray(v, dtype=float).copy() if isinstance(v, np.ndarray) else v for k, v in payload.items()}
+                    self._last_executed_action = ScheduledAction(timestamp=query_time, duration=command_dt, payload=payload_copy)
             wait_time = max(0.0, command_dt - (time.monotonic() - now))
             if self._command_stop.wait(timeout=wait_time):
                 break
@@ -801,106 +572,104 @@ class RBY1PolicyRobot:
     def _clamp_gripper_width(self, value: float) -> float:
         return float(np.clip(value, self._gripper_limits[0], self._gripper_limits[1]))
 
-    def _sample_scheduled_payload(self, query_time: float) -> Optional[Dict[str, np.ndarray]]:
-        with self._traj_lock:
-            payload: Dict[str, np.ndarray] = {}
-            for effector, key in (("left", "left_tf"), ("right", "right_tf"), ("head", "head_tf")):
-                traj = self._pose_traj.get(effector)
-                if traj is None:
-                    continue
-                pose_vec = traj(query_time)
-                payload[key] = _posevec_to_tf(pose_vec[None])[0]
-            for width_key, traj in self._width_traj.items():
-                if traj is None:
-                    continue
-                value = float(traj(query_time))
-                if width_key == "left":
-                    payload["left_gripper_width"] = value
-                else:
-                    payload["right_gripper_width"] = value
-            return payload or None
+    def _interpolate_tf(self, tf_a: np.ndarray, tf_b: np.ndarray, alpha: float) -> np.ndarray:
+        tf_a = np.asarray(tf_a, dtype=float).reshape(4, 4)
+        tf_b = np.asarray(tf_b, dtype=float).reshape(4, 4)
+        alpha = float(np.clip(alpha, 0.0, 1.0))
+        if alpha <= 0.0:
+            return tf_a
+        if alpha >= 1.0:
+            return tf_b
+        pos = (1.0 - alpha) * tf_a[:3, 3] + alpha * tf_b[:3, 3]
+        rot_interp = Slerp([0.0, 1.0], Rotation.from_matrix(np.stack([tf_a[:3, :3], tf_b[:3, :3]], axis=0)))
+        rot = rot_interp([alpha])[0].as_matrix()
+        tf = np.eye(4, dtype=float)
+        tf[:3, 3] = pos
+        tf[:3, :3] = rot
+        return tf
 
+    def _interpolate_actions(
+        self, previous: ScheduledAction, future: ScheduledAction, query_time: float
+    ) -> Dict[str, np.ndarray]:
+        if future.timestamp <= previous.timestamp:
+            return dict(future.payload)
+        alpha = np.clip((query_time - previous.timestamp) / (future.timestamp - previous.timestamp), 0.0, 1.0)
+        payload: Dict[str, np.ndarray] = {}
+        keys = set(previous.payload) | set(future.payload)
+        for key in keys:
+            a_val = previous.payload.get(key)
+            b_val = future.payload.get(key)
+            if a_val is None:
+                payload[key] = b_val  # type: ignore[assignment]
+                continue
+            if b_val is None:
+                payload[key] = a_val  # type: ignore[assignment]
+                continue
+            if key.endswith("_tf"):
+                payload[key] = self._interpolate_tf(a_val, b_val, alpha)
+            else:
+                a_arr = np.asarray(a_val, dtype=float)
+                b_arr = np.asarray(b_val, dtype=float)
+                payload[key] = (1.0 - alpha) * a_arr + alpha * b_arr
+        return payload
+
+    def _sample_scheduled_payload(self, query_time: float) -> Optional[Dict[str, np.ndarray]]:
+        result: Optional[Dict[str, np.ndarray]] = None
+        with self._action_lock:
+            # # Drop stale entries while keeping the most recent past sample for interpolation.
+            # while len(self._action_buffer) >= 2 and self._action_buffer[0].timestamp <= query_time:
+            #     self._action_buffer.popleft()
+
+            previous: Optional[ScheduledAction] = None
+            future: Optional[ScheduledAction] = None
+            for action in self._action_buffer:
+                if action.timestamp > query_time:
+                    future = action
+                    break
+                previous = action
+
+            if self._last_executed_action and self._last_executed_action.timestamp <= query_time:
+                previous = self._last_executed_action
+
+            if previous is None and not self._action_buffer:
+                result = None
+            elif previous is None:
+                result = dict(self._action_buffer[0].payload)
+            elif future is None:
+                result = dict(previous.payload)
+            else:
+                print(f"Interpolating action at t={query_time} between {previous.timestamp} and {future.timestamp}")  # pragma: no cover - debug aid
+                result = self._interpolate_actions(previous, future, query_time)
+
+        if result is None:
+            return None
+
+        for key in ("left_gripper_width", "right_gripper_width"):
+            if key in result:
+                result[key] = self._clamp_gripper_width(float(np.asarray(result[key]).reshape(-1)[0]))
+        return result
+
+    def queue_actions(self, actions: Sequence[ScheduledAction]) -> None:
+        """Store timestamped actions, letting the newest plan overwrite future entries."""
+        now = time.monotonic()
+        # filtered = [action for action in actions if action.timestamp > now]
+        # if not filtered:
+        #     return
+        print(f"action buffer timestamps: {[action.timestamp for action in self._action_buffer]}")  # pragma: no cover - debug aid
+        with self._action_lock:
+            while self._action_buffer and self._action_buffer[-1].timestamp >= actions[0].timestamp:
+                self._action_buffer.pop()
+            # Keep buffer compact by trimming very old entries.
+            while self._action_buffer and self._action_buffer[0].timestamp < now - 5.0:
+                self._action_buffer.popleft()
+            for action in actions:
+                self._action_buffer.append(action)
+        print(f"action buffer timestamps after queue: {[action.timestamp for action in self._action_buffer]}")  # pragma: no cover - debug aid
 
     def schedule_waypoint(self, payload: Dict[str, np.ndarray], timestamp: float, duration: float) -> None:
-        target_time = float(timestamp)
-        now = time.monotonic()
-        if target_time <= now:
-            return
-        current_obs: Optional[RobotObservation] = None
-        obs_pose_map: Dict[str, np.ndarray] = {}
-        obs_width_map: Dict[str, float] = {}
+        """Compatibility wrapper for legacy callers."""
 
-        def _ensure_current_obs() -> bool:
-            nonlocal current_obs, obs_pose_map, obs_width_map
-            if current_obs is not None:
-                return True
-            current_obs = self.get_latest_observation()
-            if current_obs is None:
-                return False
-            obs_pose_map = {
-                "left": _tf_to_posevec(current_obs.left_tf),
-                "right": _tf_to_posevec(current_obs.right_tf),
-                "head": _tf_to_posevec(current_obs.head_tf),
-            }
-            obs_width_map = {
-                "left": float(current_obs.left_width),
-                "right": float(current_obs.right_width),
-            }
-            return True
-
-        with self._traj_lock:
-            for effector, key in (("left", "left_tf"), ("right", "right_tf"), ("head", "head_tf")):
-                tf = payload.get(key)
-                if tf is None:
-                    continue
-                pose_vec = _tf_to_posevec(tf)
-                traj = self._pose_traj.get(effector)
-                curr_time_eff = now
-                if traj is None:
-                    if not _ensure_current_obs():
-                        return
-                    traj = PoseTrajectoryInterpolator(
-                        times=np.array([curr_time_eff], dtype=float),
-                        poses=np.array([obs_pose_map[effector]], dtype=float),
-                    )
-                    self._pose_last_waypoint[effector] = curr_time_eff
-                last_waypoint_time = self._pose_last_waypoint.get(effector)
-                traj = traj.schedule_waypoint(
-                    pose=pose_vec,
-                    time=target_time,
-                    curr_time=curr_time_eff,
-                    last_waypoint_time=last_waypoint_time,
-                    max_pos_speed=self._max_pos_speed,
-                    max_rot_speed=self._max_rot_speed,
-                )
-                self._pose_traj[effector] = traj
-                self._pose_last_waypoint[effector] = float(traj.times[-1])
-
-            for width_key, payload_key in (("left", "left_gripper_width"), ("right", "right_gripper_width")):
-                width_val = payload.get(payload_key)
-                if width_val is None:
-                    continue
-                width_target = self._clamp_gripper_width(float(width_val))
-                traj = self._width_traj.get(width_key)
-                curr_time_eff = now
-                if traj is None:
-                    if not _ensure_current_obs():
-                        return
-                    traj = ScalarTrajectoryInterpolator(
-                        times=np.array([curr_time_eff], dtype=float),
-                        values=np.array([obs_width_map[width_key]], dtype=float),
-                    )
-                    self._width_last_waypoint[width_key] = curr_time_eff
-                last_waypoint_time = self._width_last_waypoint.get(width_key)
-                traj = traj.schedule_waypoint(
-                    value=width_target,
-                    time=target_time,
-                    curr_time=curr_time_eff,
-                    last_waypoint_time=last_waypoint_time,
-                    max_speed=self._max_gripper_speed,
-                )
-                self._width_traj[width_key] = traj
-                self._width_last_waypoint[width_key] = float(traj.times[-1])
+        self.queue_actions([ScheduledAction(timestamp=float(timestamp), duration=float(duration), payload=payload)])
 
     def apply_action(
         self,
@@ -949,4 +718,4 @@ class RBY1PolicyRobot:
         )
 
 
-__all__ = ["RBY1PolicyRobot", "RobotObservation"]
+__all__ = ["RBY1PolicyRobot", "RobotObservation", "ScheduledAction"]

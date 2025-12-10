@@ -14,7 +14,7 @@ init_position:
 
 # Controller parameters
 state_frequency_hz: 100.0
-trajectory_frequency_hz: 10.0
+trajectory_frequency_hz: 20.0
 ik_frequency_hz: 100.0
 use_interpolation: true
 command_timeout_sec: 0.1

@@ -21,7 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 PROJECT_ROOT = str(PROJECT_ROOT)
 
 from camera.camera_stream import AravisCameraStreamer
-from control.rby1_realtime import RBY1PolicyRobot
+from control.rby1_realtime import RBY1PolicyRobot, ScheduledAction
 
 
 CAMERA_SERIAL_TO_KEY = {
@@ -31,15 +31,6 @@ CAMERA_SERIAL_TO_KEY = {
     "camera_left_main_rgb": "FLIR-Blackfly S BFS-PGE-23S3C-24260091",
     "camera_right_main_rgb": "FLIR-Blackfly S BFS-PGE-23S3C-24260092",
 }
-
-
-@dataclass
-class ScheduledAction:
-    """Action scheduled for execution at a given timestamp."""
-
-    timestamp: float
-    duration: float
-    payload: Dict[str, np.ndarray]
 
 
 @dataclass
@@ -532,7 +523,12 @@ def main() -> None:
     parser.add_argument("--sim-only", action="store_true", help="Run without the realtime controller and preview actions in Mujoco.")
     parser.add_argument("--sim-model", default=None, help="Optional custom MJCF path for --sim-only mode.")
     parser.add_argument("--sim-viewer", action="store_true", help="Open a Mujoco viewer when using --sim-only.")
-    parser.add_argument("--gripper-width-offset", type=float, default=0.005, help="Additive offset applied to observed gripper widths (subtracted from executed commands).")
+    parser.add_argument("--gripper-width-offset", type=float, default=0.007, help="Additive offset applied to observed gripper widths (subtracted from executed commands).")
+    parser.add_argument(
+        "--plot-tracking",
+        action="store_true",
+        help="Cache commanded actions and robot states and save a tracking error plot on exit.",
+    )
     args = parser.parse_args()
 
     control_dt = max(args.control_dt, 1e-2)
@@ -551,12 +547,40 @@ def main() -> None:
     debug_request_queue: Optional["queue.Queue[DebugActionRequest]"] = (
         queue.Queue() if args.debug_actions else None
     )
+    tracking_cmd: List[Tuple[float, Dict[str, np.ndarray]]] = []
+    tracking_policy_raw: List[Tuple[float, Dict[str, np.ndarray]]] = []
+    tracking_state: List[Tuple[float, Dict[str, np.ndarray]]] = []
+    tracking_state_thread: Optional[threading.Thread] = None
+    latency_samples: List[Dict[str, float]] = []
 
     try:
         robot.wait_until_ready()
         required_robot_samples = max(int(args.robot_horizon * args.robot_stride / (robot.dt * args.obs_frequency)), 20)
         if not robot.wait_for_observations(required_robot_samples, timeout=5.0):
             raise TimeoutError("Timed out waiting for initial robot observations")
+
+        if args.plot_tracking and not args.sim_only:
+            def _state_sampler() -> None:
+                # Sample at roughly the controller rate to overlay with commands.
+                period = max(robot.dt, 0.02)
+                while not stop_event.is_set():
+                    obs = robot.get_latest_observation()
+                    if obs is not None:
+                        tracking_state.append(
+                            (
+                                obs.timestamp,
+                                {
+                                    "left_tf": obs.left_tf.copy(),
+                                    "right_tf": obs.right_tf.copy(),
+                                    "left_gripper_width": np.array([obs.left_width], dtype=float),
+                                    "right_gripper_width": np.array([obs.right_width], dtype=float),
+                                },
+                            )
+                        )
+                    if stop_event.wait(timeout=period):
+                        break
+            tracking_state_thread = threading.Thread(target=_state_sampler, name="tracking-state", daemon=True)
+            tracking_state_thread.start()
 
         if not args.state_only and not args.sim_only:
             camera_streamer = AravisCameraStreamer(
@@ -616,7 +640,9 @@ def main() -> None:
 
                 obs_dict["timestamp"] = timestamps
 
+                infer_start = time.monotonic()
                 reply = policy_client.infer(obs_dict)
+                infer_end = time.monotonic()
                 if reply is None or "actions_tf" not in reply:
                     print("[policy] Inference timeout or malformed reply")
                     if stop_event.wait(timeout=control_dt):
@@ -625,6 +651,28 @@ def main() -> None:
 
                 actions_tf = reply.get("actions_tf")
                 action_timestamps = np.asarray(reply.get("timestamps", []), dtype=float)
+                if args.plot_tracking:
+                    raw_actions_tf = reply.get("raw_actions_tf")
+                    raw_action_timestamps = reply.get("raw_timestamps")
+                    if raw_actions_tf is not None and raw_action_timestamps is not None:
+                        tracking_policy_raw.append(
+                            (
+                                np.asarray(raw_action_timestamps, dtype=float),
+                                {k: np.asarray(v) for k, v in raw_actions_tf.items()},
+                            )
+                        )
+                print(f"[policy] Received action chunk with keys: {list(actions_tf.keys())} and timestamps: {action_timestamps}")
+
+                if args.plot_tracking and action_timestamps.size:
+                    obs_age = float(infer_end - float(timestamps[-1]))
+                    latency_samples.append(
+                        {
+                            "obs_age_s": obs_age,
+                            "infer_s": float(infer_end - infer_start),
+                            "queue_delay_s": float(time.monotonic() - infer_start),
+                            "first_action_delay_s": float(action_timestamps[0] - infer_end),
+                        }
+                    )
 
                 if not actions_tf:
                     print("[policy] Missing actions in reply")
@@ -665,13 +713,33 @@ def main() -> None:
                     #         action.timestamp += shift
                     #     print(f"[policy] Shifted action batch forward by {shift:.3f}s to compensate latency.")
 
-                    for action in scheduled_actions:
-                        payload = _offset_gripper_action(action.payload, args.gripper_width_offset)
-                        robot.schedule_waypoint(
-                            payload=payload,
+                    queued_actions = [
+                        ScheduledAction(
                             timestamp=action.timestamp,
                             duration=max(action.duration, control_dt),
+                            payload=_offset_gripper_action(action.payload, args.gripper_width_offset),
                         )
+                        for action in scheduled_actions
+                    ]
+                    if args.plot_tracking:
+                        tracking_policy_raw.extend([(action.timestamp, action.payload) for action in scheduled_actions])
+                    if args.plot_tracking:
+                        tracking_cmd.extend([(a.timestamp, a.payload) for a in queued_actions])
+                    robot.queue_actions(queued_actions)
+                    if args.plot_tracking:
+                        obs = robot.get_latest_observation()
+                        if obs is not None:
+                            tracking_state.append(
+                                (
+                                    obs.timestamp,
+                                    {
+                                        "left_tf": obs.left_tf.copy(),
+                                        "right_tf": obs.right_tf.copy(),
+                                        "left_gripper_width": np.array([obs.left_width], dtype=float),
+                                        "right_gripper_width": np.array([obs.right_width], dtype=float),
+                                    },
+                                )
+                            )
 
                 elapsed = time.monotonic() - start
                 wait_time = max(0.0, control_dt - elapsed)
@@ -700,10 +768,138 @@ def main() -> None:
         stop_event.set()
         for thread in threads:
             thread.join(timeout=1.0)
+        if tracking_state_thread is not None:
+            tracking_state_thread.join(timeout=1.0)
         if camera_streamer is not None:
             camera_streamer.stop()
         if policy_client is not None:
             policy_client.close()
+        if args.plot_tracking and not args.sim_only:
+            try:
+                import matplotlib.pyplot as plt  # type: ignore
+            except Exception as exc:  # pragma: no cover
+                print(f"[plot] Unable to import matplotlib: {exc}")
+            else:
+                # Sample latest robot states to align with commands
+                # plotting may have already captured many states via the sampler; append the freshest one as well
+                obs = robot.get_latest_observation()
+                if obs is not None:
+                    tracking_state.append(
+                        (
+                            obs.timestamp,
+                            {
+                                "left_tf": obs.left_tf.copy(),
+                                "right_tf": obs.right_tf.copy(),
+                                "left_gripper_width": np.array([obs.left_width], dtype=float),
+                                "right_gripper_width": np.array([obs.right_width], dtype=float),
+                            },
+                        )
+                    )
+
+                def _tf_pos(tf: np.ndarray) -> np.ndarray:
+                    return np.asarray(tf, dtype=float).reshape(4, 4)[:3, 3]
+
+                def _series_to_lines(series: List[Tuple[float, Dict[str, np.ndarray]]], key: str):
+                    series_sorted = sorted(
+                        series,
+                        key=lambda item: float(np.asarray(item[0]).ravel()[0]) if item and item[0] is not None else 0.0,
+                    )
+                    ts: List[float] = []
+                    xs: List[float] = []
+                    ys: List[float] = []
+                    zs: List[float] = []
+                    for t, payload in series_sorted:
+                        tf_key = f"{key}_tf"
+                        if tf_key in payload:
+                            pos = _tf_pos(payload[tf_key])
+                            ts.append(t)
+                            xs.append(pos[0])
+                            ys.append(pos[1])
+                            zs.append(pos[2])
+                        elif key in payload:
+                            pos = _tf_pos(payload[key])
+                            ts.append(t)
+                            xs.append(pos[0])
+                            ys.append(pos[1])
+                            zs.append(pos[2])
+                    return ts, xs, ys, zs
+
+                def _series_to_width(series: List[Tuple[float, Dict[str, np.ndarray]]], key: str):
+                    series_sorted = sorted(
+                        series,
+                        key=lambda item: float(np.asarray(item[0]).ravel()[0]) if item and item[0] is not None else 0.0,
+                    )
+                    ts: List[float] = []
+                    vals: List[float] = []
+                    for t, payload in series_sorted:
+                        width_key = f"{key}_gripper_width"
+                        if width_key in payload:
+                            width_val = float(np.asarray(payload[width_key]).reshape(-1)[0])
+                            ts.append(t)
+                            vals.append(width_val)
+                    return ts, vals
+
+                fig, axes = plt.subplots(4, 2, figsize=(12, 10), sharex="row")
+                palette = plt.rcParams["axes.prop_cycle"].by_key().get("color", ["C0", "C1", "C2", "C3", "C4", "C5"])
+                eff_list = ["left", "right"]
+                for col, eff in enumerate(eff_list):
+                    ts_cmd, xs_cmd, ys_cmd, zs_cmd = _series_to_lines(tracking_cmd, eff)
+                    ts_act, xs_act, ys_act, zs_act = _series_to_lines(tracking_state, eff)
+                    for row, (cmd, act, label) in enumerate(
+                        zip((xs_cmd, ys_cmd, zs_cmd), (xs_act, ys_act, zs_act), ("x", "y", "z"))
+                    ):
+                        ax = axes[row][col]
+                        ax.plot(ts_cmd, cmd, linestyle="--", alpha=0.7, label=f"{eff} {label} cmd")
+                        if tracking_policy_raw:
+                            total_chunks = len(tracking_policy_raw)
+                            for idx, (ts_chunk, payload_chunk) in enumerate(tracking_policy_raw):
+                                ts_line, xs_line, ys_line, zs_line = _series_to_lines([(ts_chunk, payload_chunk)], eff)
+                                series_map = {"x": xs_line, "y": ys_line, "z": zs_line}
+                                color = palette[idx % len(palette)]
+                                ax.scatter(ts_line, series_map[label], s=14, alpha=0.85, marker="o", color=color,
+                                           label=f"{eff} {label} policy" if idx == 0 else None)
+                        ax.plot(ts_act, act, linestyle="-", alpha=0.9, label=f"{eff} {label} act")
+                        ax.legend(loc="upper right")
+                        ax.set_ylabel(label)
+                        if row == 0:
+                            ax.set_title(f"{eff} arm")
+                    # gripper widths
+                    ax_w = axes[-1][col]
+                    ts_w_cmd, vals_w_cmd = _series_to_width(tracking_cmd, eff)
+                    ts_w_act, vals_w_act = _series_to_width(tracking_state, eff)
+                    ax_w.plot(ts_w_cmd, vals_w_cmd, linestyle="--", alpha=0.7, label=f"{eff} width cmd")
+                    if tracking_policy_raw:
+                        total_chunks = len(tracking_policy_raw)
+                        for idx, (ts_chunk, payload_chunk) in enumerate(tracking_policy_raw):
+                            ts_line, vals_line = _series_to_width([(ts_chunk, payload_chunk)], eff)
+                            color = palette[idx % len(palette)]
+                            ax_w.scatter(ts_line, vals_line, s=14, alpha=0.85, marker="o", color=color,
+                                         label=f"{eff} width policy" if idx == 0 else None)
+                    ax_w.plot(ts_w_act, vals_w_act, linestyle="-", alpha=0.9, label=f"{eff} width act")
+                    ax_w.set_ylabel("width")
+                    ax_w.legend(loc="upper right")
+                axes[-1][0].set_xlabel("time (s)")
+                axes[-1][1].set_xlabel("time (s)")
+                plt.tight_layout()
+                if latency_samples:
+                    obs_age_vals = [s["obs_age_s"] for s in latency_samples]
+                    infer_vals = [s["infer_s"] for s in latency_samples]
+                    first_action_delay = [s["first_action_delay_s"] for s in latency_samples if np.isfinite(s["first_action_delay_s"])]
+                    print(
+                        "[latency] obs_age_s med/p95: "
+                        f"{np.median(obs_age_vals):.4f}/{np.percentile(obs_age_vals, 95):.4f}, "
+                        f"infer_s med/p95: {np.median(infer_vals):.4f}/{np.percentile(infer_vals, 95):.4f}, "
+                        f"first_action_delay_s med/p95: "
+                        f"{(np.median(first_action_delay) if first_action_delay else float('nan')):.4f}/"
+                        f"{(np.percentile(first_action_delay, 95) if first_action_delay else float('nan')):.4f}"
+                    )
+                out_path = Path(PROJECT_ROOT) / "tracking_plot.png"
+                try:
+                    fig.savefig(out_path)
+                    print(f"[plot] Saved tracking plot to {out_path}")
+                except Exception as exc:  # pragma: no cover
+                    print(f"[plot] Failed to save plot: {exc}")
+                plt.close(fig)
         robot.stop()
 
 

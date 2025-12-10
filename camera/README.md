@@ -74,6 +74,7 @@ synthetic images:
 python3 scripts/camera_stream_viewer.py --mock
 ```
 
+IMPORTANT: everytime after restarting, run:
 ```
 sudo /usr/local/sbin/setup-x710.sh
 ```
