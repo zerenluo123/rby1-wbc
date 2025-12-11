@@ -32,6 +32,16 @@ CAMERA_SERIAL_TO_KEY = {
     "camera_right_main_rgb": "FLIR-Blackfly S BFS-PGE-23S3C-24260092",
 }
 
+DEFAULT_CAMERA_LATENCIES = {
+    # Wrist cameras (left/right)
+    "camera_left_main_rgb": 0.12,
+    "camera_right_main_rgb": 0.12,
+    # Head rig (main, right, ultrawide)
+    "camera_head_main_rgb": 0.27,
+    "camera_head_main_right_rgb": 0.27,
+    "camera_head_ultrawide_rgb": 0.27,
+}
+
 
 @dataclass
 class DebugActionRequest:
@@ -121,6 +131,44 @@ def _offset_gripper_action(
         )
     return adjusted
 
+
+def _merge_camera_timestamps(camera_ts: Dict[str, np.ndarray]) -> np.ndarray:
+    """Use the slowest camera as the reference observation clock."""
+
+    if not camera_ts:
+        raise ValueError("camera_ts must contain at least one camera stream")
+    arrays = [np.asarray(ts, dtype=float).reshape(-1) for ts in camera_ts.values()]
+    reference = arrays[0]
+    for arr in arrays[1:]:
+        if arr.shape != reference.shape:
+            raise ValueError("Camera timestamp arrays must share the same shape")
+        reference = np.maximum(reference, arr)
+    return reference
+
+
+def _parse_latency_overrides(entries: Optional[Sequence[str]]) -> Dict[str, float]:
+    if not entries:
+        return {}
+    mapping: Dict[str, float] = {}
+    for entry in entries:
+        if "=" not in entry:
+            raise ValueError(f"Invalid camera latency override '{entry}', expected KEY=SECONDS")
+        key, val = entry.split("=", 1)
+        key = key.strip()
+        try:
+            mapping[key] = float(val)
+        except ValueError:
+            raise ValueError(f"Invalid latency value in override '{entry}'") from None
+    return mapping
+
+
+def _camera_latency_for(key: str, global_override: Optional[float], overrides: Dict[str, float]) -> float:
+    if global_override is not None:
+        return float(global_override)
+    if key in overrides:
+        return float(overrides[key])
+    return float(DEFAULT_CAMERA_LATENCIES.get(key, 0.0))
+
 class PolicyClient:
     """Thin ZMQ wrapper that talks to the detached policy server."""
 
@@ -188,18 +236,18 @@ def build_scheduled_actions(
                 continue
             payload[PAYLOAD_TF_KEYS[effector]] = tf_series[idx]
         if "gripper_left_gripper_width" in actions_tf:
-            payload["left_gripper_width"] = float(actions_tf["gripper_left_gripper_width"][idx].reshape(-1)[0])
+            payload["left_gripper_width"] = np.clip(float(actions_tf["gripper_left_gripper_width"][idx].reshape(-1)[0]) - 0.003, GRIPPER_WIDTH_LIMITS[0], GRIPPER_WIDTH_LIMITS[1])
         if "gripper_right_gripper_width" in actions_tf:
-            payload["right_gripper_width"] = float(actions_tf["gripper_right_gripper_width"][idx].reshape(-1)[0])
+            payload["right_gripper_width"] = np.clip(float(actions_tf["gripper_right_gripper_width"][idx].reshape(-1)[0]) - 0.003, GRIPPER_WIDTH_LIMITS[0], GRIPPER_WIDTH_LIMITS[1])
 
         for effector, key in PAYLOAD_TF_KEYS.items():
             if key in payload and effector in TCP_TO_MODEL_FRAME:
                 payload[key] = _apply_transform_tf(payload[key], TCP_TO_MODEL_FRAME[effector])
 
         timestamp = _timestamp_for_index(idx)
-        if timestamp <= now:
-            # Drop commands that are already stale.
-            continue
+        # if timestamp <= now:
+        #     # Drop commands that are already stale.
+        #     continue
 
         if idx + 1 < length:
             next_timestamp = _timestamp_for_index(idx + 1)
@@ -510,10 +558,48 @@ def main() -> None:
     parser.add_argument("--camera-stride", type=int, default=3)
     parser.add_argument("--state-only", action="store_true", help="Skip camera streaming")
     parser.add_argument("--mock-cameras", action="store_true", help="Generate synthetic camera images")
-    parser.add_argument("--control-dt", type=float, default=0.05)
+    parser.add_argument("--control-dt", type=float, default=0.1)
+    parser.add_argument(
+        "--policy-interval",
+        type=float,
+        default=0.8,
+        help="Target interval between policy inference calls in seconds.",
+    )
     parser.add_argument("--obs_frequency", type=float, default=60.0, help="Observation frequency in Hz")
     parser.add_argument("--policy-timeout", type=float, default=2.0, help="ZMQ request timeout in seconds")
-    parser.add_argument("--executor-lookahead", type=float, default=0.05, help="Execution loop lookahead in seconds")
+    parser.add_argument("--executor-lookahead", type=float, default=0.0, help="Execution loop lookahead in seconds")
+    parser.add_argument(
+        "--arm-execution-latency",
+        type=float,
+        default=0.2753,
+        help="Measured execution latency (seconds) for the arm controller.",
+    )
+    parser.add_argument(
+        "--gripper-execution-latency",
+        type=float,
+        default=0.1001,
+        help="Measured execution latency (seconds) for the gripper hardware.",
+    )
+    parser.add_argument(
+        "--camera-latency",
+        type=float,
+        default=None,
+        help="Global camera latency (seconds) applied to all cameras; defaults to per-camera values if unset.",
+    )
+    parser.add_argument(
+        "--camera-latency-override",
+        action="append",
+        help=(
+            "Per-camera latency override KEY=SECONDS; repeatable. "
+            "Defaults: wrists 0.12s (camera_left/right_main_rgb), head 0.27s."
+        ),
+    )
+    parser.add_argument(
+        "--proprioception-latency",
+        type=float,
+        default=0.005,
+        help="Measured proprioception latency (seconds) for observation alignment.",
+    )
     parser.add_argument(
         "--debug-actions",
         action="store_true",
@@ -523,7 +609,7 @@ def main() -> None:
     parser.add_argument("--sim-only", action="store_true", help="Run without the realtime controller and preview actions in Mujoco.")
     parser.add_argument("--sim-model", default=None, help="Optional custom MJCF path for --sim-only mode.")
     parser.add_argument("--sim-viewer", action="store_true", help="Open a Mujoco viewer when using --sim-only.")
-    parser.add_argument("--gripper-width-offset", type=float, default=0.007, help="Additive offset applied to observed gripper widths (subtracted from executed commands).")
+    parser.add_argument("--gripper-width-offset", type=float, default=0.0, help="Additive offset applied to observed gripper widths (subtracted from executed commands).")
     parser.add_argument(
         "--plot-tracking",
         action="store_true",
@@ -531,13 +617,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    camera_latency_overrides = _parse_latency_overrides(args.camera_latency_override)
     control_dt = max(args.control_dt, 1e-2)
+    inference_period = max(args.policy_interval, 1e-2)
+
     robot = RBY1PolicyRobot(
         config_path=PROJECT_ROOT + "/config/wbc_policy.yaml",
         use_sim=args.sim_only,
         sim_model_path=args.sim_model,
         sim_viewer=args.sim_viewer,
-        command_lookahead=args.executor_lookahead,
     )
     robot.start()
     camera_streamer = None
@@ -549,12 +637,15 @@ def main() -> None:
     )
     tracking_cmd: List[Tuple[float, Dict[str, np.ndarray]]] = []
     tracking_policy_raw: List[Tuple[float, Dict[str, np.ndarray]]] = []
+    tracking_exec: List[Tuple[float, Dict[str, np.ndarray]]] = []
     tracking_state: List[Tuple[float, Dict[str, np.ndarray]]] = []
     tracking_state_thread: Optional[threading.Thread] = None
     latency_samples: List[Dict[str, float]] = []
 
     try:
         robot.wait_until_ready()
+        if args.plot_tracking:
+            robot.set_execution_hook(lambda ts, payload: tracking_exec.append((ts, payload)))
         required_robot_samples = max(int(args.robot_horizon * args.robot_stride / (robot.dt * args.obs_frequency)), 20)
         if not robot.wait_for_observations(required_robot_samples, timeout=5.0):
             raise TimeoutError("Timed out waiting for initial robot observations")
@@ -562,7 +653,7 @@ def main() -> None:
         if args.plot_tracking and not args.sim_only:
             def _state_sampler() -> None:
                 # Sample at roughly the controller rate to overlay with commands.
-                period = max(robot.dt, 0.02)
+                period = max(robot.dt, 0.1)
                 while not stop_event.is_set():
                     obs = robot.get_latest_observation()
                     if obs is not None:
@@ -609,40 +700,69 @@ def main() -> None:
         def inference_worker() -> None:
             while not stop_event.is_set():
                 start = time.monotonic()
-                try:
-                    robot_obs_model = robot.get_observation_window(
-                        horizon=args.robot_horizon,
-                        stride=args.robot_stride,
-                        obs_frequency=args.obs_frequency,
-                    )
-                except Exception as exc:  # pragma: no cover - runtime safeguard
-                    print(f"[robot] Failed to gather observation: {exc}")
-                    if stop_event.wait(timeout=control_dt):
-                        break
-                    continue
-                policy_robot_obs = _convert_robot_observations(robot_obs_model, MODEL_TO_TCP_FRAME)
-                policy_robot_obs = _offset_gripper_obs(policy_robot_obs, args.gripper_width_offset)
-                obs_dict = {k: v for k, v in policy_robot_obs.items() if k != "timestamp"}
-                timestamps = robot_obs_model["timestamp"]
+                anchor_timestamps: Optional[np.ndarray] = None
+                # try:
+                #     robot_obs_model = robot.get_observation_window(
+                #         horizon=args.robot_horizon,
+                #         stride=args.robot_stride,
+                #         obs_frequency=args.obs_frequency,
+                #     )
+                # except Exception as exc:  # pragma: no cover - runtime safeguard
+                #     print(f"[robot] Failed to gather observation: {exc}")
+                #     if stop_event.wait(timeout=control_dt):
+                #         break
+                #     continue
 
                 debug_images: Optional[Dict[str, np.ndarray]] = None
+                camera_timestamps: Dict[str, np.ndarray] = {}
                 if camera_streamer is not None:
                     try:
-                        camera_obs = camera_streamer.get_observation_window(
+                        camera_result = camera_streamer.get_observation_window(
                             horizon=args.camera_horizon,
                             stride=args.camera_stride,
                             obs_frequency=args.obs_frequency,
+                            include_timestamps=True,
                         )
-                        obs_dict.update(camera_obs)
+                        camera_obs, camera_timestamps = camera_result
                         debug_images = {k: np.asarray(v).copy() for k, v in camera_obs.items()}
                     except RuntimeError as exc:
                         print(f"[camera] {exc}")
+                        camera_obs = None
+                else:
+                    camera_obs = None
 
-                obs_dict["timestamp"] = timestamps
+                if camera_obs is not None and camera_timestamps:
+                    adjusted_camera_ts = {
+                        key: np.asarray(ts, dtype=float)
+                        - _camera_latency_for(key, args.camera_latency, camera_latency_overrides)
+                        for key, ts in camera_timestamps.items()
+                    }
+                    anchor_timestamps = _merge_camera_timestamps(adjusted_camera_ts)
+                    query_timestamps = anchor_timestamps + float(args.proprioception_latency)
+                    try:
+                        robot_obs_model = robot.sample_observations_at(query_timestamps)
+                    except Exception as exc:  # pragma: no cover - runtime safeguard
+                        print(f"[robot] Failed to align observations: {exc}")
+                        if stop_event.wait(timeout=control_dt):
+                            break
+                        continue
+                else:
+                    anchor_timestamps = np.asarray(robot_obs_model.get("timestamp", []), dtype=float) - float(
+                        args.proprioception_latency
+                    )
+
+                policy_robot_obs = _convert_robot_observations(robot_obs_model, MODEL_TO_TCP_FRAME)
+                policy_robot_obs = _offset_gripper_obs(policy_robot_obs, args.gripper_width_offset)
+                obs_dict = {k: v for k, v in policy_robot_obs.items() if k != "timestamp"}
+                if camera_obs is not None:
+                    obs_dict.update(camera_obs)
+
+                obs_dict["timestamp"] = anchor_timestamps
 
                 infer_start = time.monotonic()
                 reply = policy_client.infer(obs_dict)
                 infer_end = time.monotonic()
+                print(f"[policy] observation timestamps: {anchor_timestamps}, action timestamps: {reply.get('timestamps', None) if reply else None}")
                 if reply is None or "actions_tf" not in reply:
                     print("[policy] Inference timeout or malformed reply")
                     if stop_event.wait(timeout=control_dt):
@@ -650,27 +770,27 @@ def main() -> None:
                     continue
 
                 actions_tf = reply.get("actions_tf")
+                has_gripper_actions = bool(
+                    actions_tf
+                    and (
+                        "gripper_left_gripper_width" in actions_tf
+                        or "gripper_right_gripper_width" in actions_tf
+                    )
+                )
                 action_timestamps = np.asarray(reply.get("timestamps", []), dtype=float)
-                if args.plot_tracking:
-                    raw_actions_tf = reply.get("raw_actions_tf")
-                    raw_action_timestamps = reply.get("raw_timestamps")
-                    if raw_actions_tf is not None and raw_action_timestamps is not None:
-                        tracking_policy_raw.append(
-                            (
-                                np.asarray(raw_action_timestamps, dtype=float),
-                                {k: np.asarray(v) for k, v in raw_actions_tf.items()},
-                            )
-                        )
                 print(f"[policy] Received action chunk with keys: {list(actions_tf.keys())} and timestamps: {action_timestamps}")
 
-                if args.plot_tracking and action_timestamps.size:
-                    obs_age = float(infer_end - float(timestamps[-1]))
+                if args.plot_tracking and action_timestamps.size and anchor_timestamps is not None:
+                    arm_cutoff = float(infer_end + max(args.executor_lookahead, args.arm_execution_latency, 0.0))
+                    gripper_cutoff = float(infer_end + max(args.executor_lookahead, args.gripper_execution_latency, 0.0))
+                    first_action_ready = arm_cutoff if not has_gripper_actions else max(arm_cutoff, gripper_cutoff)
+                    obs_age = float(infer_end - float(np.asarray(anchor_timestamps).reshape(-1)[-1]))
                     latency_samples.append(
                         {
                             "obs_age_s": obs_age,
                             "infer_s": float(infer_end - infer_start),
                             "queue_delay_s": float(time.monotonic() - infer_start),
-                            "first_action_delay_s": float(action_timestamps[0] - infer_end),
+                            "first_action_delay_s": float(action_timestamps[0] - first_action_ready),
                         }
                     )
 
@@ -680,6 +800,60 @@ def main() -> None:
                         break
                     continue
 
+                # Drop actions that are already outdated when accounting for observation,
+                # inference, and execution latency. The policy timestamps are anchored to
+                # the observation stream, so any desired timestamp that lands before the
+                # soonest achievable execution time would ask the robot to "time travel".
+                # Following PD1.2, discard those actions instead of shifting the entire
+                # chunk forward.
+                if action_timestamps.size:
+                    arm_cutoff = float(infer_end + max(args.executor_lookahead, args.arm_execution_latency, 0.0))
+                    gripper_cutoff = float(infer_end + max(args.executor_lookahead, args.gripper_execution_latency, 0.0))
+                    finite_ts = np.asarray(action_timestamps, dtype=float).reshape(-1)
+                    valid_mask = np.isfinite(finite_ts) & (finite_ts > arm_cutoff)
+                    if has_gripper_actions:
+                        valid_mask &= finite_ts > gripper_cutoff
+                    if not np.any(valid_mask):
+                        cutoff_desc = f"arm>{arm_cutoff:.3f}s"
+                        if has_gripper_actions:
+                            cutoff_desc += f", gripper>{gripper_cutoff:.3f}s"
+                        print(f"[policy] Dropping action chunk; all desired timestamps precede execution cutoffs ({cutoff_desc}).")
+                        if stop_event.wait(timeout=control_dt):
+                            break
+                        continue
+
+                    first_valid_idx = int(np.argmax(valid_mask))
+                    if first_valid_idx > 0:
+                        if has_gripper_actions:
+                            msg = (
+                                f"[policy] Skipping {first_valid_idx} stale actions to match "
+                                f"arm/gripper execution latency (>{arm_cutoff:.3f}s/{gripper_cutoff:.3f}s)."
+                            )
+                        else:
+                            msg = (
+                                f"[policy] Skipping {first_valid_idx} stale actions to match "
+                                f"arm execution latency (>{arm_cutoff:.3f}s)."
+                            )
+                        print(msg)
+                        # substract the execution latency to keep the action timing consistent
+                        action_timestamps -= max(args.executor_lookahead, args.arm_execution_latency, 0.0)
+                        if args.plot_tracking:
+                            # add all actions and timestamps, including the ones being skipped
+                            scheduled_actions_raw = build_scheduled_actions(
+                                actions_tf=actions_tf,
+                                timestamps=action_timestamps,
+                                fallback_dt=control_dt,
+                                now=time.monotonic(),
+                            )
+                            tracking_policy_raw.extend(
+                                [(a.timestamp, a.payload) for a in scheduled_actions_raw]
+                            )
+                        action_timestamps = action_timestamps[first_valid_idx:]
+                        actions_tf = {
+                            key: (None if val is None else np.asarray(val)[first_valid_idx:])
+                            for key, val in actions_tf.items()
+                        }
+  
                 scheduled_actions = build_scheduled_actions(
                     actions_tf=actions_tf,
                     timestamps=action_timestamps,
@@ -704,28 +878,9 @@ def main() -> None:
                             print("[debug] Action batch rejected; skipping execution.")
                             continue
 
-                    # lookahead = max(args.executor_lookahead, 0.0)
-                    # min_start = time.monotonic() + lookahead
-                    # earliest_ts = min(action.timestamp for action in scheduled_actions)
-                    # if earliest_ts < min_start:
-                    #     shift = min_start - earliest_ts
-                    #     for action in scheduled_actions:
-                    #         action.timestamp += shift
-                    #     print(f"[policy] Shifted action batch forward by {shift:.3f}s to compensate latency.")
-
-                    queued_actions = [
-                        ScheduledAction(
-                            timestamp=action.timestamp,
-                            duration=max(action.duration, control_dt),
-                            payload=_offset_gripper_action(action.payload, args.gripper_width_offset),
-                        )
-                        for action in scheduled_actions
-                    ]
                     if args.plot_tracking:
-                        tracking_policy_raw.extend([(action.timestamp, action.payload) for action in scheduled_actions])
-                    if args.plot_tracking:
-                        tracking_cmd.extend([(a.timestamp, a.payload) for a in queued_actions])
-                    robot.queue_actions(queued_actions)
+                        tracking_cmd.extend([(a.timestamp, a.payload) for a in scheduled_actions])
+                    robot.queue_actions(scheduled_actions)
                     if args.plot_tracking:
                         obs = robot.get_latest_observation()
                         if obs is not None:
@@ -742,7 +897,8 @@ def main() -> None:
                             )
 
                 elapsed = time.monotonic() - start
-                wait_time = max(0.0, control_dt - elapsed)
+                wait_time = max(0.0, inference_period - elapsed)
+                print(f"[policy] Inference cycle took {elapsed:.3f}s, waiting {wait_time:.3f}s until next cycle.")
                 if stop_event.wait(timeout=wait_time):
                     break
 
@@ -839,25 +995,33 @@ def main() -> None:
                             vals.append(width_val)
                     return ts, vals
 
-                fig, axes = plt.subplots(4, 2, figsize=(12, 10), sharex="row")
-                palette = plt.rcParams["axes.prop_cycle"].by_key().get("color", ["C0", "C1", "C2", "C3", "C4", "C5"])
+                plt.clf()
+                fig, axes = plt.subplots(4, 2, figsize=(16, 12), sharex="row")
                 eff_list = ["left", "right"]
                 for col, eff in enumerate(eff_list):
                     ts_cmd, xs_cmd, ys_cmd, zs_cmd = _series_to_lines(tracking_cmd, eff)
                     ts_act, xs_act, ys_act, zs_act = _series_to_lines(tracking_state, eff)
+                    ts_exec, xs_exec, ys_exec, zs_exec = _series_to_lines(tracking_exec, eff)
+                    ts_policy_raw, xs_policy_raw, ys_policy_raw, zs_policy_raw = _series_to_lines(tracking_policy_raw, eff)
                     for row, (cmd, act, label) in enumerate(
                         zip((xs_cmd, ys_cmd, zs_cmd), (xs_act, ys_act, zs_act), ("x", "y", "z"))
                     ):
                         ax = axes[row][col]
-                        ax.plot(ts_cmd, cmd, linestyle="--", alpha=0.7, label=f"{eff} {label} cmd")
-                        if tracking_policy_raw:
-                            total_chunks = len(tracking_policy_raw)
-                            for idx, (ts_chunk, payload_chunk) in enumerate(tracking_policy_raw):
-                                ts_line, xs_line, ys_line, zs_line = _series_to_lines([(ts_chunk, payload_chunk)], eff)
-                                series_map = {"x": xs_line, "y": ys_line, "z": zs_line}
-                                color = palette[idx % len(palette)]
-                                ax.scatter(ts_line, series_map[label], s=14, alpha=0.85, marker="o", color=color,
-                                           label=f"{eff} {label} policy" if idx == 0 else None)
+                        # ax.plot(ts_cmd, cmd, linestyle="--", alpha=0.7, label=f"{eff} {label} cmd")
+                        ax.scatter(ts_exec, {"x": xs_exec, "y": ys_exec, "z": zs_exec}[label],
+                                    s=14, alpha=0.8, marker="+", color='m',
+                                    label=f"{eff} {label} exec")
+                        if ts_policy_raw:
+                            ax.scatter(
+                                ts_policy_raw,
+                                {"x": xs_policy_raw, "y": ys_policy_raw, "z": zs_policy_raw}[label],
+                                s=14,
+                                alpha=0.6,
+                                marker="o",
+                                color="b",
+                                label=f"{eff} {label} policy (raw)",
+                            )
+                        ax.scatter(ts_cmd, cmd, s=14, alpha=0.9, marker="o", color='r', label=f"{eff} {label} cmd")
                         ax.plot(ts_act, act, linestyle="-", alpha=0.9, label=f"{eff} {label} act")
                         ax.legend(loc="upper right")
                         ax.set_ylabel(label)
@@ -867,15 +1031,24 @@ def main() -> None:
                     ax_w = axes[-1][col]
                     ts_w_cmd, vals_w_cmd = _series_to_width(tracking_cmd, eff)
                     ts_w_act, vals_w_act = _series_to_width(tracking_state, eff)
-                    ax_w.plot(ts_w_cmd, vals_w_cmd, linestyle="--", alpha=0.7, label=f"{eff} width cmd")
-                    if tracking_policy_raw:
-                        total_chunks = len(tracking_policy_raw)
-                        for idx, (ts_chunk, payload_chunk) in enumerate(tracking_policy_raw):
-                            ts_line, vals_line = _series_to_width([(ts_chunk, payload_chunk)], eff)
-                            color = palette[idx % len(palette)]
-                            ax_w.scatter(ts_line, vals_line, s=14, alpha=0.85, marker="o", color=color,
-                                         label=f"{eff} width policy" if idx == 0 else None)
-                    ax_w.plot(ts_w_act, vals_w_act, linestyle="-", alpha=0.9, label=f"{eff} width act")
+                    ts_w_exec, vals_w_exec = _series_to_width(tracking_exec, eff)
+                    ts_w_policy_raw, vals_w_policy_raw = _series_to_width(tracking_policy_raw, eff)
+                    # ax_w.plot(ts_w_cmd, vals_w_cmd, linestyle="--", alpha=0.7, label=f"{eff} width cmd")
+                    ax_w.scatter(ts_w_cmd, vals_w_cmd, s=14, alpha=0.7, marker="x", color='r', label=f"{eff} width cmd")
+                    if ts_w_exec:
+                        ax_w.scatter(ts_w_exec, vals_w_exec, s=14, alpha=0.8, marker="o", color='m', label=f"{eff} width exec")
+                    if ts_w_policy_raw:
+                        ax_w.scatter(
+                            ts_w_policy_raw,
+                            vals_w_policy_raw,
+                            s=14,
+                            alpha=0.6,
+                            marker="o",
+                            color="b",
+                            label=f"{eff} width policy (raw)",
+                        )
+                    # ax_w.plot(ts_w_act, vals_w_act, linestyle="-", alpha=0.9, label=f"{eff} width act")
+                    ax_w.scatter(ts_w_act, vals_w_act, s=14, alpha=0.9, marker=".", color='g', label=f"{eff} width act")
                     ax_w.set_ylabel("width")
                     ax_w.legend(loc="upper right")
                 axes[-1][0].set_xlabel("time (s)")

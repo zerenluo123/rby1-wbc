@@ -304,7 +304,6 @@ class RBY1PolicyRobot:
         max_gripper_speed: float = 0.1,
         gripper_min_width: float = 0.0,
         gripper_max_width: float = 0.085,
-        command_lookahead: float = 0.0,
     ) -> None:
         if use_sim:
             self._backend: Any = _SimBackend(model_path=sim_model_path, enable_viewer=sim_viewer)
@@ -320,11 +319,11 @@ class RBY1PolicyRobot:
         self._action_lock = threading.Lock()
         self._action_buffer: Deque[ScheduledAction] = deque()
         self._last_executed_action: Optional[ScheduledAction] = None
+        self._execution_hook: Optional[Callable[[float, Dict[str, np.ndarray]], None]] = None
         self._max_pos_speed = float(max_pos_speed)
         self._max_rot_speed = float(max_rot_speed)
         self._max_gripper_speed = float(max_gripper_speed)
         self._gripper_limits = (float(gripper_min_width), float(gripper_max_width))
-        self._command_lookahead = max(float(command_lookahead), 0.0)
 
         # Mirror of the MuJoCo model used for FK computations in the streaming
         # thread.  The worker keeps an internal model already, but sharing it
@@ -340,6 +339,11 @@ class RBY1PolicyRobot:
         """Return the IK loop period of the underlying controller."""
 
         return 1.0 / float(self._backend.trajectory_frequency_hz)
+
+    def set_execution_hook(self, hook: Optional[Callable[[float, Dict[str, np.ndarray]], None]]) -> None:
+        """Register a callback invoked after each command is sent to the backend."""
+
+        self._execution_hook = hook
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -422,7 +426,7 @@ class RBY1PolicyRobot:
         command_dt = 1.0 / float(self._backend.trajectory_frequency_hz)
         while not self._command_stop.is_set():
             now = time.monotonic()
-            query_time = now + self._command_lookahead
+            query_time = now
             payload = self._sample_scheduled_payload(query_time)
             if payload is not None and {"left_tf", "right_tf"}.issubset(payload):
                 self.apply_action(payload, duration=command_dt, timestamp=now)
@@ -430,6 +434,11 @@ class RBY1PolicyRobot:
                     # Store the last command actually sent to the robot for smoother interpolation.
                     payload_copy = {k: np.asarray(v, dtype=float).copy() if isinstance(v, np.ndarray) else v for k, v in payload.items()}
                     self._last_executed_action = ScheduledAction(timestamp=query_time, duration=command_dt, payload=payload_copy)
+                if self._execution_hook is not None:
+                    try:
+                        self._execution_hook(query_time, payload_copy)
+                    except Exception:
+                        pass
             wait_time = max(0.0, command_dt - (time.monotonic() - now))
             if self._command_stop.wait(timeout=wait_time):
                 break
@@ -480,6 +489,50 @@ class RBY1PolicyRobot:
     def get_latest_observation(self) -> Optional[RobotObservation]:
         with self._buffer_lock:
             return self._buffer[-1] if self._buffer else None
+
+    def sample_observations_at(self, timestamps: np.ndarray) -> Dict[str, np.ndarray]:
+        """Interpolate robot observations at arbitrary timestamps."""
+
+        query_ts = np.asarray(timestamps, dtype=float).reshape(-1)
+        if query_ts.size == 0:
+            raise ValueError("timestamps must contain at least one entry")
+
+        with self._buffer_lock:
+            if not self._buffer:
+                raise RuntimeError("Robot observation buffer is empty")
+            buffer_list = list(self._buffer)
+
+        buffer_timestamps = np.array([obs.timestamp for obs in buffer_list], dtype=float)
+
+        def _build_tf_interp(get_tf: Callable[[RobotObservation], np.ndarray]) -> _PoseInterpolator:
+            poses = np.stack([_tf_to_posevec(get_tf(obs)) for obs in buffer_list], axis=0)
+            return _PoseInterpolator(buffer_timestamps, poses)
+
+        left_interp = _build_tf_interp(lambda obs: obs.left_tf)
+        right_interp = _build_tf_interp(lambda obs: obs.right_tf)
+        head_interp = _build_tf_interp(lambda obs: obs.head_tf)
+
+        def _interp_scalar(attr: str) -> np.ndarray:
+            values = np.stack([getattr(obs, attr) for obs in buffer_list], axis=0)
+            return _build_interp1d(buffer_timestamps, values.reshape(-1, 1))
+
+        left_width_interp = _interp_scalar("left_width")
+        right_width_interp = _interp_scalar("right_width")
+
+        left_tf = _posevec_to_tf(left_interp(query_ts))
+        right_tf = _posevec_to_tf(right_interp(query_ts))
+        head_tf = _posevec_to_tf(head_interp(query_ts))
+        left_width = left_width_interp(query_ts)
+        right_width = right_width_interp(query_ts)
+
+        return {
+            "timestamp": query_ts,
+            "gripper_left_tf": left_tf,
+            "gripper_right_tf": right_tf,
+            "head_tf": head_tf,
+            "gripper_left_gripper_width": left_width.reshape(-1, 1),
+            "gripper_right_gripper_width": right_width.reshape(-1, 1),
+        }
 
     def get_observation_window(
         self,
@@ -655,16 +708,15 @@ class RBY1PolicyRobot:
         # filtered = [action for action in actions if action.timestamp > now]
         # if not filtered:
         #     return
-        print(f"action buffer timestamps: {[action.timestamp for action in self._action_buffer]}")  # pragma: no cover - debug aid
+        # print(f"action buffer timestamps: {[action.timestamp for action in self._action_buffer]}")  # pragma: no cover - debug aid
         with self._action_lock:
             while self._action_buffer and self._action_buffer[-1].timestamp >= actions[0].timestamp:
                 self._action_buffer.pop()
-            # Keep buffer compact by trimming very old entries.
-            while self._action_buffer and self._action_buffer[0].timestamp < now - 5.0:
+            # Keep buffer compact by trimming old entries.
+            while self._action_buffer and self._action_buffer[0].timestamp < now:
                 self._action_buffer.popleft()
-            for action in actions:
-                self._action_buffer.append(action)
-        print(f"action buffer timestamps after queue: {[action.timestamp for action in self._action_buffer]}")  # pragma: no cover - debug aid
+            self._action_buffer.extend(actions)
+        # print(f"action buffer timestamps after queue: {[action.timestamp for action in self._action_buffer]}")  # pragma: no cover - debug aid
 
     def schedule_waypoint(self, payload: Dict[str, np.ndarray], timestamp: float, duration: float) -> None:
         """Compatibility wrapper for legacy callers."""

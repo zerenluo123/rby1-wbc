@@ -21,8 +21,7 @@ TORSO_UPRIGHT_ORI_COST = 1000
 POSTURE_COST_MAIN = 100.0
 POSTURE_COST_HEAD = 0.0
 COM_OVER_BASE_POS_COST = 100.0
-VELOCITY_LIMIT_SCALE = 0.9
-
+VELOCITY_LIMIT_SCALE = 1.0
 NOMINAL_TORSO_RAD = np.array([0.0,
                               0.7854,
                               -1.5708,
@@ -47,8 +46,8 @@ NOMINAL_HEAD_RAD = np.array([0.0, 0.6109])
 
 SAFETY_DISTANCE = 0.01         # m, keep at least this clearance
 INFLUENCE_DISTANCE = 0.02      # m, start repulsion here
-BASE_XY_V_LIMIT = 0. # 1 m/s
-BASE_RZ_V_LIMIT = 0. # 1 rad/s
+BASE_XY_V_LIMIT = 1. # 1 m/s
+BASE_RZ_V_LIMIT = 1. # 1 rad/s
 
 JOINT_VEL_LIMITS = {
     # Un-prefixed joint names; a namespace resolver will add "rby1/" if present in the model

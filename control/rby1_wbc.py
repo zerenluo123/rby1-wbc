@@ -30,7 +30,8 @@ PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 # TRI's IK runs at 500 hz and ours at 100 hz, so scale the gains by 5x
 BASE_ERROR_GAIN = np.array([0.2, 0.2, 0.2], dtype=float)
 # Might need to tune this more
-BASE_VELOCITY_GAIN = np.array([0.1, 0.1, 0.12], dtype=float)
+# BASE_VELOCITY_GAIN = np.array([0.1, 0.1, 0.12], dtype=float)
+BASE_VELOCITY_GAIN = np.array([0.05, 0.05, 0.1], dtype=float)
 
 class RobotStateBuffer:
     """Stores the latest robot snapshot retrieved from the controller."""

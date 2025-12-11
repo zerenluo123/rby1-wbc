@@ -210,8 +210,9 @@ class AravisCameraStreamer:
                 except ValueError as exc:
                     print(f"[camera:{obs_key}] {exc}", file=sys.stderr)
                     continue
-                timestamp = buffer.get_timestamp() * 1e-9
-                frame = CameraFrame(timestamp=timestamp, image=np_image)
+                # Use host monotonic clock for timestamps so all downstream
+                # consumers share a common time base (robot, cameras, policy).
+                frame = CameraFrame(timestamp=time.monotonic(), image=np_image)
                 with self._buffers_lock:
                     self._buffers[obs_key].append(frame)
             finally:
@@ -303,7 +304,9 @@ class AravisCameraStreamer:
         horizon: int,
         stride: int = 1,
         obs_frequency: Optional[float] = None,
-    ) -> Dict[str, np.ndarray]:
+        *,
+        include_timestamps: bool = False,
+    ) -> Dict[str, np.ndarray] | tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
         """Return stacked image observations.
 
         The returned dictionary maps observation keys (as passed in the
@@ -319,6 +322,7 @@ class AravisCameraStreamer:
             buffers_copy = {k: list(v) for k, v in self._buffers.items()}
 
         observations: Dict[str, np.ndarray] = {}
+        timestamps: Dict[str, np.ndarray] = {}
         for key, frames in buffers_copy.items():
             if not frames:
                 raise RuntimeError(f"No frames available for camera '{key}'")
@@ -334,6 +338,10 @@ class AravisCameraStreamer:
                 idx = np.abs(frame_ts[:, None] - desired_ts[None, :]).argmin(axis=0)
                 selected = [frames[i] for i in idx]
             observations[key] = np.stack([frame.image for frame in selected], axis=0)
+            timestamps[key] = np.array([frame.timestamp for frame in selected], dtype=float)
+
+        if include_timestamps:
+            return observations, timestamps
         return observations
 
 

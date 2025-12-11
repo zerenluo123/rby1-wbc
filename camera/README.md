@@ -75,6 +75,15 @@ python3 scripts/camera_stream_viewer.py --mock
 ```
 
 IMPORTANT: everytime after restarting, run:
-```
+```bash
 sudo /usr/local/sbin/setup-x710.sh
+```
+
+```bash
+#!/bin/bash
+# Configure Intel X710 port 0 with static IP
+
+ip addr flush dev enp2s0f0 || true
+ip addr add 192.168.88.2/24 dev enp2s0f0 || true
+ip link set enp2s0f0 up || true
 ```
