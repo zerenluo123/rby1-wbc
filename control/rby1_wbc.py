@@ -189,14 +189,12 @@ class RBY1WBC:
         right_width: Optional[float] = None,
         head_pos: Optional[np.ndarray] = None,
         head_quat: Optional[np.ndarray] = None,
-        duration: Optional[np.ndarray] = None,
+        duration: Optional[float] = None,
         timestamp: Optional[float] = None,
     ) -> None:
         if duration is None:
-            duration = np.array(
-                [1.0 / self.trajectory_frequency_hz], dtype=float
-            )
-            
+            duration = 1.0 / self.trajectory_frequency_hz
+
         self.ee_targets.set_targets(
             left_pos,
             left_quat,
