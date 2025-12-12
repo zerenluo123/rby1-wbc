@@ -22,6 +22,8 @@ from . import (
     Config as ControllerConfig,
     RealtimeDriver,
     RobotSnapshot,
+    AdmittanceController,
+    AdmittanceControllerConfig,
 )
 from ft.calibrator import FTCalibrator
 
@@ -93,11 +95,6 @@ class RBY1WBC:
         self.base_velocity_gain = np.asarray(require("base_velocity_gain"), dtype=float)
         self.low_pass_freq_hz = require("low_pass_freq_hz")
 
-        incremental_cfg = self.config.get("incremental_safety", {})
-        self.incremental_safety_enabled = bool(incremental_cfg.get("enabled", False))
-        self.max_incremental_translation = float(incremental_cfg.get("max_translation_m", 0.05))
-        self.max_incremental_rotation_deg = float(incremental_cfg.get("max_rotation_deg", 20.0))
-
         admittance_cfg = require("admittance")
         self.admittance_enabled = bool(admittance_cfg.get("enabled", False))
         self._admittance_initialized = False
@@ -137,9 +134,6 @@ class RBY1WBC:
         )
         self._right_ee_site_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_SITE, "end_effector_r"
-        )
-        self._head_ee_site_id = mujoco.mj_name2id(
-            self.model, mujoco.mjtObj.mjOBJ_SITE, "head"
         )
         if self._left_ee_site_id < 0 or self._right_ee_site_id < 0:
             raise RuntimeError("End-effector body IDs could not be resolved in the MuJoCo model.")
@@ -187,7 +181,6 @@ class RBY1WBC:
 
     def update_targets(
         self,
-        duration: float,
         left_pos: np.ndarray,
         left_quat: np.ndarray,
         right_pos: np.ndarray,
@@ -196,21 +189,13 @@ class RBY1WBC:
         right_width: Optional[float] = None,
         head_pos: Optional[np.ndarray] = None,
         head_quat: Optional[np.ndarray] = None,
+        duration: Optional[float] = None,
         timestamp: Optional[float] = None,
-    ) -> bool:
-        if not self._passes_incremental_safety(
-            left_pos,
-            left_quat,
-            right_pos,
-            right_quat,
-            head_pos,
-            head_quat,
-        ):
-            print("[wbc] target command rejected by incremental safety.")
-            return False
+    ) -> None:
+        if duration is None:
+            duration = 1.0 / self.trajectory_frequency_hz
 
         self.ee_targets.set_targets(
-            duration,
             left_pos,
             left_quat,
             right_pos,
@@ -219,78 +204,9 @@ class RBY1WBC:
             right_width=right_width,
             head_pos=head_pos,
             head_quat=head_quat,
+            duration=duration,
             timestamp=timestamp,
         )
-        return True
-
-    def _passes_incremental_safety(
-        self,
-        left_pos: np.ndarray,
-        left_quat: np.ndarray,
-        right_pos: np.ndarray,
-        right_quat: np.ndarray,
-        head_pos: Optional[np.ndarray] = None,
-        head_quat: Optional[np.ndarray] = None,
-    ) -> bool:
-        if not self.incremental_safety_enabled:
-            return True
-
-        snapshot = self.robot_state.load()
-        if snapshot is None or not snapshot.is_valid:
-            return True
-
-        current_qpos = self.snapshot_to_qpos(snapshot)
-        if current_qpos is None:
-            return True
-
-        with self._model_lock:
-            self.data.qpos[:] = current_qpos
-            mujoco.mj_forward(self.model, self.data)
-
-            left_rot = self.data.site_xmat[self._left_ee_site_id]
-            right_rot = self.data.site_xmat[self._right_ee_site_id]
-            left_quat_current = np.zeros(4)
-            right_quat_current = np.zeros(4)
-            mujoco.mju_mat2Quat(left_quat_current, left_rot)
-            mujoco.mju_mat2Quat(right_quat_current, right_rot)
-            left_pos_current = self.data.site_xpos[self._left_ee_site_id].copy()
-            right_pos_current = self.data.site_xpos[self._right_ee_site_id].copy()
-
-        left_delta = float(np.linalg.norm(np.asarray(left_pos, dtype=float) - left_pos_current))
-        left_rot_delta = self._quat_angle_deg(left_quat_current, left_quat)
-        if (
-            left_delta > self.max_incremental_translation
-            or left_rot_delta > self.max_incremental_rotation_deg
-        ):
-            print(
-                f"[wbc] incremental safety reject (left): dpos={left_delta:.3f}m"
-                f" drot={left_rot_delta:.1f}deg (limits {self.max_incremental_translation}m"
-                f" {self.max_incremental_rotation_deg}deg)"
-            )
-            return False
-
-        right_delta = float(np.linalg.norm(np.asarray(right_pos, dtype=float) - right_pos_current))
-        right_rot_delta = self._quat_angle_deg(right_quat_current, right_quat)
-        if (
-            right_delta > self.max_incremental_translation
-            or right_rot_delta > self.max_incremental_rotation_deg
-        ):
-            print(
-                f"[wbc] incremental safety reject (right): dpos={right_delta:.3f}m"
-                f" drot={right_rot_delta:.1f}deg (limits {self.max_incremental_translation}m"
-                f" {self.max_incremental_rotation_deg}deg)"
-            )
-            return False
-
-        return True
-
-    @staticmethod
-    def _quat_angle_deg(q1: np.ndarray, q2: np.ndarray) -> float:
-        q1n = _normalize_quaternion(np.asarray(q1, dtype=float))
-        q2n = _normalize_quaternion(np.asarray(q2, dtype=float))
-        dot = float(np.clip(np.dot(q1n, q2n), -1.0, 1.0))
-        angle_rad = 2.0 * math.acos(abs(dot))
-        return math.degrees(angle_rad)
 
     def get_latest_robot_state(self) -> Optional[RobotSnapshot]:
         return self.robot_state.load()
@@ -332,7 +248,6 @@ class RBY1WBC:
         config.command_timeout_us = int(
             round(max(command_timeout_sec, 0.0) * 1_000_000.0)
         )
-        config.low_pass_freq_hz = float(self.low_pass_freq_hz)
         controller = RealtimeDriver(config)
         controller.start()
         if not controller.wait_until_ready(timeout_sec=15.0):
@@ -391,7 +306,7 @@ class RBY1WBC:
         if max_delta < 1e-6:
             self.controller.set_body_position_targets(target_body.tolist())
         else:
-            INIT_POSITION_MAX_STEP_DELTA = 0.01
+            INIT_POSITION_MAX_STEP_DELTA = 0.02
             steps = max(10, int(np.ceil(max_delta / INIT_POSITION_MAX_STEP_DELTA)))
             for step in range(1, steps + 1):
                 alpha = step / steps
@@ -463,7 +378,6 @@ class RBY1WBC:
                         right_quat,
                         self._admittance_wrench_right,
                     )
-            ik_start = time.perf_counter()
             sol_qpos, sol_vel, success, _info = self.ik_solver.solve(
                 left_target_pos=left_pos,
                 left_target_quat=left_quat,
@@ -474,8 +388,6 @@ class RBY1WBC:
                 current_qpos=current_qpos,
                 dt=self.ik_rate.dt,
             )
-            ik_elapsed_ms = (time.perf_counter() - ik_start) * 1000.0
-            # print(f"[wbc] IK solve took {ik_elapsed_ms:.3f} ms")
             if not success:
                 print(f"[wbc] IK failed: {_info}")
 
