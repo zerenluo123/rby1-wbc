@@ -21,7 +21,7 @@ command_timeout_sec: 0.1
 low_pass_freq_hz: 1
 
 admittance:
-  enabled: true
+  enabled: false
   desired_wrench:
     left: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     right: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
