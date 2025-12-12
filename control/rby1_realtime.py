@@ -27,7 +27,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Deque, Dict, Iterable, Optional, Sequence
+from typing import Any, Callable, Deque, Dict, Iterable, Optional, Sequence
 
 import mujoco
 import numpy as np
@@ -667,35 +667,56 @@ class RBY1PolicyRobot:
         return payload
 
     def _sample_scheduled_payload(self, query_time: float) -> Optional[Dict[str, np.ndarray]]:
-        result: Optional[Dict[str, np.ndarray]] = None
-        with self._action_lock:
-            # # Drop stale entries while keeping the most recent past sample for interpolation.
-            # while len(self._action_buffer) >= 2 and self._action_buffer[0].timestamp <= query_time:
-            #     self._action_buffer.popleft()
+        def _contains_tf(payload: Dict[str, np.ndarray]) -> bool:
+            return any(k.endswith("_tf") for k in payload)
 
+        def _contains_gripper(payload: Dict[str, np.ndarray]) -> bool:
+            return any("gripper_width" in k for k in payload)
+
+        def _select_actions(predicate: Callable[[Dict[str, np.ndarray]], bool]) -> tuple[Optional[ScheduledAction], Optional[ScheduledAction]]:
             previous: Optional[ScheduledAction] = None
             future: Optional[ScheduledAction] = None
             for action in self._action_buffer:
+                if not predicate(action.payload):
+                    continue
                 if action.timestamp > query_time:
                     future = action
                     break
                 previous = action
-
-            if self._last_executed_action and self._last_executed_action.timestamp <= query_time:
+            if (
+                self._last_executed_action
+                and self._last_executed_action.timestamp <= query_time
+                and predicate(self._last_executed_action.payload)
+            ):
                 previous = self._last_executed_action
+            return previous, future
 
-            if previous is None and not self._action_buffer:
-                result = None
-            elif previous is None:
-                result = dict(self._action_buffer[0].payload)
+        def _resolve_payload(previous: Optional[ScheduledAction], future: Optional[ScheduledAction], key_filter: Callable[[str], bool]) -> Optional[Dict[str, np.ndarray]]:
+            if previous is None and future is None:
+                return None
+            if previous is None:
+                payload = dict(future.payload)
             elif future is None:
-                result = dict(previous.payload)
+                payload = dict(previous.payload)
             else:
-                print(f"Interpolating action at t={query_time} between {previous.timestamp} and {future.timestamp}")  # pragma: no cover - debug aid
-                result = self._interpolate_actions(previous, future, query_time)
+                payload = self._interpolate_actions(previous, future, query_time)
+            return {k: v for k, v in payload.items() if key_filter(k)}
 
-        if result is None:
+        with self._action_lock:
+            eef_prev, eef_future = _select_actions(_contains_tf)
+            gripper_prev, gripper_future = _select_actions(_contains_gripper)
+
+        eef_payload = _resolve_payload(eef_prev, eef_future, lambda k: k.endswith("_tf"))
+        gripper_payload = _resolve_payload(gripper_prev, gripper_future, lambda k: "gripper_width" in k)
+
+        if eef_payload is None and gripper_payload is None:
             return None
+
+        result: Dict[str, np.ndarray] = {}
+        if eef_payload is not None:
+            result.update(eef_payload)
+        if gripper_payload is not None:
+            result.update(gripper_payload)
 
         for key in ("left_gripper_width", "right_gripper_width"):
             if key in result:

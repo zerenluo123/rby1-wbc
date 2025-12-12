@@ -210,10 +210,6 @@ def build_scheduled_actions(
     if not actions_tf:
         return []
 
-    length = max(arr.shape[0] for arr in actions_tf.values() if arr is not None)
-    if length == 0:
-        return []
-
     timestamps = np.asarray(timestamps, dtype=float).reshape(-1)
 
     def _timestamp_for_index(idx: int) -> float:
@@ -225,38 +221,86 @@ def build_scheduled_actions(
             return now + fallback_dt * (idx + 1)
         return ts
 
+    eef_length = max(
+        (
+            np.asarray(actions_tf[key]).shape[0]
+            for key in OBS_TF_KEYS.values()
+            if key in actions_tf and actions_tf[key] is not None
+        ),
+        default=0,
+    )
+    gripper_length = max(
+        (
+            np.asarray(actions_tf[key]).shape[0]
+            for key in ("gripper_left_gripper_width", "gripper_right_gripper_width")
+            if key in actions_tf and actions_tf[key] is not None
+        ),
+        default=0,
+    )
+
+    if eef_length == 0 and gripper_length == 0:
+        return []
+
     scheduled: List[ScheduledAction] = []
-    for idx in range(length):
-        payload: Dict[str, np.ndarray] = {}
-        for effector, obs_key in OBS_TF_KEYS.items():
-            if obs_key not in actions_tf:
+    if eef_length > 0:
+        for idx in range(eef_length):
+            payload: Dict[str, np.ndarray] = {}
+            for effector, obs_key in OBS_TF_KEYS.items():
+                if obs_key not in actions_tf:
+                    continue
+                tf_series = np.asarray(actions_tf[obs_key], dtype=float)
+                if idx >= tf_series.shape[0]:
+                    continue
+                payload[PAYLOAD_TF_KEYS[effector]] = tf_series[idx]
+
+            for effector, key in PAYLOAD_TF_KEYS.items():
+                if key in payload and effector in TCP_TO_MODEL_FRAME:
+                    payload[key] = _apply_transform_tf(payload[key], TCP_TO_MODEL_FRAME[effector])
+
+            if not payload:
                 continue
-            tf_series = np.asarray(actions_tf[obs_key], dtype=float)
-            if idx >= tf_series.shape[0]:
+
+            timestamp = _timestamp_for_index(idx)
+            if idx + 1 < eef_length:
+                next_timestamp = _timestamp_for_index(idx + 1)
+                duration = float(max(fallback_dt, next_timestamp - timestamp))
+            else:
+                duration = float(fallback_dt)
+
+            scheduled.append(ScheduledAction(timestamp=timestamp, duration=duration, payload=payload))
+
+    if gripper_length > 0:
+        for idx in range(gripper_length):
+            payload: Dict[str, np.ndarray] = {}
+            if "gripper_left_gripper_width" in actions_tf:
+                width_series = np.asarray(actions_tf["gripper_left_gripper_width"], dtype=float)
+                if idx < width_series.shape[0]:
+                    payload["left_gripper_width"] = np.clip(
+                        float(width_series[idx].reshape(-1)[0]) - 0.003, GRIPPER_WIDTH_LIMITS[0], GRIPPER_WIDTH_LIMITS[1]
+                    )
+            if "gripper_right_gripper_width" in actions_tf:
+                width_series = np.asarray(actions_tf["gripper_right_gripper_width"], dtype=float)
+                if idx < width_series.shape[0]:
+                    payload["right_gripper_width"] = np.clip(
+                        float(width_series[idx].reshape(-1)[0]) - 0.003, GRIPPER_WIDTH_LIMITS[0], GRIPPER_WIDTH_LIMITS[1]
+                    )
+
+            if not payload:
                 continue
-            payload[PAYLOAD_TF_KEYS[effector]] = tf_series[idx]
-        if "gripper_left_gripper_width" in actions_tf:
-            payload["left_gripper_width"] = np.clip(float(actions_tf["gripper_left_gripper_width"][idx].reshape(-1)[0]) - 0.003, GRIPPER_WIDTH_LIMITS[0], GRIPPER_WIDTH_LIMITS[1])
-        if "gripper_right_gripper_width" in actions_tf:
-            payload["right_gripper_width"] = np.clip(float(actions_tf["gripper_right_gripper_width"][idx].reshape(-1)[0]) - 0.003, GRIPPER_WIDTH_LIMITS[0], GRIPPER_WIDTH_LIMITS[1])
 
-        for effector, key in PAYLOAD_TF_KEYS.items():
-            if key in payload and effector in TCP_TO_MODEL_FRAME:
-                payload[key] = _apply_transform_tf(payload[key], TCP_TO_MODEL_FRAME[effector])
+            timestamp = _timestamp_for_index(idx)
+            if idx + 1 < gripper_length:
+                next_timestamp = _timestamp_for_index(idx + 1)
+                duration = float(max(fallback_dt, next_timestamp - timestamp))
+            else:
+                duration = float(fallback_dt)
 
-        timestamp = _timestamp_for_index(idx)
-        # if timestamp <= now:
-        #     # Drop commands that are already stale.
-        #     continue
+            scheduled.append(ScheduledAction(timestamp=timestamp, duration=duration, payload=payload))
 
-        if idx + 1 < length:
-            next_timestamp = _timestamp_for_index(idx + 1)
-            duration = float(max(fallback_dt, next_timestamp - timestamp))
-        else:
-            duration = float(fallback_dt)
+    if not scheduled:
+        return []
 
-        scheduled.append(ScheduledAction(timestamp=timestamp, duration=duration, payload=payload))
-
+    scheduled.sort(key=lambda a: a.timestamp)
     return scheduled
 
 def _plot_action_chunk(
@@ -290,8 +334,7 @@ def _plot_action_chunk(
         for action in actions:
             payload = action.payload
             if payload_key not in payload:
-                coords = []
-                break
+                continue
             tf = np.asarray(payload[payload_key], dtype=float).reshape(4, 4)
             coords.append(tf[:3, 3])
             rots.append(Rotation.from_matrix(tf[:3, :3]).as_rotvec())
@@ -310,10 +353,10 @@ def _plot_action_chunk(
         for action in actions:
             payload = action.payload
             if key not in payload:
-                break
+                continue
             value = np.asarray(payload[key], dtype=float).reshape(-1)
             values.append(value)
-        else:
+        if values:
             stacked = np.vstack(values)
             if stacked.ndim == 1:
                 stacked = stacked[:, None]
@@ -758,11 +801,11 @@ def main() -> None:
                     obs_dict.update(camera_obs)
 
                 obs_dict["timestamp"] = anchor_timestamps
-
+                # Policy inference
                 infer_start = time.monotonic()
                 reply = policy_client.infer(obs_dict)
                 infer_end = time.monotonic()
-                print(f"[policy] observation timestamps: {anchor_timestamps}, action timestamps: {reply.get('timestamps', None) if reply else None}")
+                # print(f"[policy] observation timestamps: {anchor_timestamps}, action timestamps: {reply.get('timestamps', None) if reply else None}")
                 if reply is None or "actions_tf" not in reply:
                     print("[policy] Inference timeout or malformed reply")
                     if stop_event.wait(timeout=control_dt):
@@ -835,7 +878,7 @@ def main() -> None:
                                 f"arm execution latency (>{arm_cutoff:.3f}s)."
                             )
                         print(msg)
-                        # substract the execution latency to keep the action timing consistent
+                        # Lookahead effect - substract the execution latency to keep the action timing consistent
                         action_timestamps -= max(args.executor_lookahead, args.arm_execution_latency, 0.0)
                         if args.plot_tracking:
                             # add all actions and timestamps, including the ones being skipped

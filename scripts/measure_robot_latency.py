@@ -13,6 +13,7 @@ from typing import Dict, MutableMapping, Sequence, Tuple
 
 import numpy as np
 from scipy import signal
+from scipy.spatial.transform import Rotation
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -105,10 +106,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Measure robot execution latency")
     parser.add_argument("--duration", type=float, default=20.0, help="Total duration in seconds")
     parser.add_argument("--frequency", type=float, default=1.0, help="Sine wave frequency in Hz")
-    parser.add_argument("--amplitude", type=float, default=0.03, help="Sine wave amplitude in meters")
+    parser.add_argument("--amplitude", type=float, default=0.03, help="Sine wave amplitude in meters (or radians for head)")
     parser.add_argument("--sample-rate", type=float, default=20.0, help="Command/update rate in Hz")
-    parser.add_argument("--axis", choices=["x", "y", "z"], default="x", help="Axis to oscillate")
-    parser.add_argument("--arm", choices=["left", "right"], default="right", help="Arm to command")
+    parser.add_argument("--axis", choices=["x", "y", "z"], default="x", help="Axis to oscillate (arms)")
+    parser.add_argument("--arm", choices=["left", "right", "head"], default="right", help="Effector to command")
+    parser.add_argument(
+        "--head-axis",
+        choices=["roll", "pitch", "yaw"],
+        default="yaw",
+        help="Rotation axis to oscillate when --arm=head",
+    )
     parser.add_argument("--use-sim", action="store_true", help="Run against the MuJoCo simulation backend")
     parser.add_argument("--output-csv", type=str, default=None, help="Optional CSV path for debugging traces")
     parser.add_argument("--output-plot", type=str, default=None, help="Optional PNG path for plotting traces")
@@ -123,13 +130,13 @@ def main() -> None:
     right_tf = obs["gripper_right_tf"][0]
     head_tf = obs["head_tf"][0]
 
-    active_tf = left_tf if args.arm == "left" else right_tf
+    active_tf = left_tf if args.arm == "left" else right_tf if args.arm == "right" else head_tf
     base_pose = np.array(active_tf, dtype=float)
 
     stop_flag: Dict[str, bool] = {"stop": False}
     _install_sigint_handler(stop_flag)
 
-    axis_index = {"x": 0, "y": 1, "z": 2}[args.axis]
+    axis_index = {"x": 0, "y": 1, "z": 2}.get(args.axis, 0)
     command_period = 1.0 / max(args.sample_rate, 1e-3)
     start_time = time.monotonic()
     commands: list[Tuple[float, float]] = []
@@ -141,25 +148,36 @@ def main() -> None:
         phase = now - start_time
         offset = args.amplitude * math.sin(2.0 * math.pi * args.frequency * phase)
 
-        target_tf = np.array(base_pose, dtype=float)
-        target_tf[axis_index, 3] = base_pose[axis_index, 3] + offset
+        if args.arm == "head":
+            axis_vec = {"roll": np.array([1.0, 0.0, 0.0]), "pitch": np.array([0.0, 1.0, 0.0]), "yaw": np.array([0.0, 0.0, 1.0])}[
+                args.head_axis
+            ]
+            base_rot = Rotation.from_matrix(base_pose[:3, :3])
+            delta_rot = Rotation.from_rotvec(axis_vec * offset)
+            target_rot = (delta_rot * base_rot).as_matrix()
+            target_tf = np.array(base_pose, dtype=float)
+            target_tf[:3, :3] = target_rot
+        else:
+            target_tf = np.array(base_pose, dtype=float)
+            target_tf[axis_index, 3] = base_pose[axis_index, 3] + offset
 
         payload = {
             "left_tf": target_tf if args.arm == "left" else left_tf,
             "right_tf": target_tf if args.arm == "right" else right_tf,
-            "head_tf": head_tf,
+            "head_tf": target_tf if args.arm == "head" else head_tf,
         }
         robot.apply_action(payload, duration=command_period, timestamp=now)
         commands.append((now, offset))
 
         obs = robot.get_observation_window(horizon=1)
-        measured_tf = obs["gripper_left_tf" if args.arm == "left" else "gripper_right_tf"][0]
-        measurements.append(
-            (
-                float(obs["timestamp"][-1]),
-                float(np.asarray(measured_tf[axis_index, 3] - base_pose[axis_index, 3]).item()),
-            )
-        )
+        if args.arm == "head":
+            measured_tf = obs["head_tf"][0]
+            rel_rot = Rotation.from_matrix(measured_tf[:3, :3]) * Rotation.from_matrix(base_pose[:3, :3]).inv()
+            meas_offset = float(np.dot(rel_rot.as_rotvec(), axis_vec))
+        else:
+            measured_tf = obs["gripper_left_tf" if args.arm == "left" else "gripper_right_tf"][0]
+            meas_offset = float(np.asarray(measured_tf[axis_index, 3] - base_pose[axis_index, 3]).item())
+        measurements.append((float(obs["timestamp"][-1]), meas_offset))
 
         sleep_dt = command_period - (time.monotonic() - now)
         if sleep_dt > 0:
@@ -194,3 +212,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# under 10Hz
+# yaw: 0.3006s
+# pitch: 0.3254s
