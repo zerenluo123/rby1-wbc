@@ -22,6 +22,8 @@ from . import (
     Config as ControllerConfig,
     RealtimeDriver,
     RobotSnapshot,
+    AdmittanceController,
+    AdmittanceControllerConfig,
 )
 from ft.calibrator import FTCalibrator
 
