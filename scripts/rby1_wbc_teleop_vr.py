@@ -1,4 +1,4 @@
-"""GUI frontend that drives targets for the standalone RBY1 WBC thread."""
+"""Meta Quest teleoperation frontend for the standalone RBY1 WBC thread."""
 
 from __future__ import annotations
 
@@ -6,16 +6,14 @@ import argparse
 import math
 import os
 import sys
+import threading
 import time
-import subprocess
 from pathlib import Path
 from typing import Optional
+
 import mujoco
 import mujoco.viewer
 import numpy as np
-import pickle
-import threading
-from scipy.spatial.transform import Rotation
 
 from loop_rate_limiters import RateLimiter
 
@@ -25,7 +23,8 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from control.rby1_wbc import RBY1WBC
-from demo.trajectory_loader import load_trajectory
+from teleop.teleop_targets import TeleopTargets
+from teleop.teleop_vr import TeleopVR
 
 
 def _quat_angle_error(target_quat: np.ndarray, actual_quat: np.ndarray) -> float:
@@ -42,17 +41,19 @@ def _quat_angle_error(target_quat: np.ndarray, actual_quat: np.ndarray) -> float
     return 2.0 * math.acos(dot)
 
 
-class RBY1WBCTrajectory:
-    def __init__(self, wbc: RBY1WBC, headless: bool = False, poses_list: list[dict] | None = None, widths_list: list[dict] | None = None) -> None:
+class RBY1WBCTeleopVR:
+    def __init__(self, wbc: RBY1WBC, teleop: TeleopVR, headless: bool = False) -> None:
         self.wbc = wbc
+        self.teleop = teleop
+        self.headless = headless
+
         self.model_path = self.wbc.model_path
         self.trajectory_frequency_hz = self.wbc.trajectory_frequency_hz
-        self.headless = headless
 
         self.model = mujoco.MjModel.from_xml_path(self.model_path)
         self.data = mujoco.MjData(self.model)
         mujoco.mj_forward(self.model, self.data)
-        
+
         snapshot = self._wait_for_initial_snapshot()
         if snapshot is None:
             raise RuntimeError("Failed to receive initial robot state snapshot")
@@ -67,12 +68,13 @@ class RBY1WBCTrajectory:
             )
             mujoco.mjv_defaultFreeCamera(self.model, self.viewer.cam)
             self.viewer_rate = RateLimiter(frequency=60.0, warn=False)
+        else:
+            self.viewer_rate = RateLimiter(frequency=60.0, warn=False)
 
-        # Trajectory Streamer Setup
-        self.poses_list = poses_list if poses_list is not None else []
-        self.widths_list = widths_list if widths_list is not None else []
+        # Trajectory streamer setup
         self.trajectory_rate = RateLimiter(frequency=self.trajectory_frequency_hz, warn=False)
-        self.trajectory_index = 0
+        self._stop_event = threading.Event()
+        self._trajectory_thread: Optional[threading.Thread] = None
 
         self._left_ee_site_id = self.model.site("end_effector_l").id
         self._right_ee_site_id = self.model.site("end_effector_r").id
@@ -81,6 +83,8 @@ class RBY1WBCTrajectory:
         mujoco.mj_forward(self.model, base_data)
         base_mat = base_data.site_xmat[self._head_ee_site_id].copy()
         self._head_site_base_rot = base_mat.reshape(3, 3, order="F")
+
+        self.teleop.start()
 
     def _wait_for_initial_snapshot(self, timeout_sec: float = 5.0):
         deadline = time.monotonic() + timeout_sec
@@ -162,10 +166,10 @@ class RBY1WBCTrajectory:
         )
 
         errors = [err for err in (left_err, right_err, head_err) if err is not None]
-        if errors:
-            msg = f"[EE error] {' | '.join(errors)}"
-            sys.stdout.write(f"\r{msg}\x1b[K")
-            sys.stdout.flush()
+        # if errors:
+        #     msg = f"[EE error] {' | '.join(errors)}"
+        #     sys.stdout.write(f"\r{msg}\x1b[K")
+        #     sys.stdout.flush()
 
         mujoco.mj_camlight(self.model, self.data)
         self.viewer.sync()
@@ -347,115 +351,102 @@ class RBY1WBCTrajectory:
             dtype=np.float64,
         )
 
-    @staticmethod
-    def _transform_to_pose(transform) -> tuple[np.ndarray, np.ndarray]:
-        mat = transform.as_matrix() if hasattr(transform, "as_matrix") else np.asarray(transform)
-        pos = mat[:3, 3].astype(float)
-        quat_xyzw = Rotation.from_matrix(mat[:3, :3]).as_quat()
-        quat_wxyz = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]], dtype=float)
-        return pos, quat_wxyz
-
     def trajectory_loop(self) -> None:
-        """Stream the full trajectory to the WBC at trajectory_rate until finished."""
-        input("Press [Enter] to start streaming the trajectory.")
-        num_steps = min(len(self.poses_list), len(self.widths_list))
-        while self.trajectory_index < num_steps:
-
-            # Get Gripper (and Head) Poses
-            pose_entry = self.poses_list[self.trajectory_index]
-            left_transform = pose_entry["left_arm"]
-            right_transform = pose_entry["right_arm"]
-            left_pos, left_quat = self._transform_to_pose(left_transform)
-            right_pos, right_quat = self._transform_to_pose(right_transform)
-
-            head_pos = head_quat = None
-            if "head" in pose_entry:
-                head_transform = pose_entry["head"]
-                head_pos, head_quat = self._transform_to_pose(head_transform)
-
-            # Get Gripper Widths
-            width_entry = self.widths_list[self.trajectory_index]
-            left_width = width_entry["left_width"]
-            right_width = width_entry["right_width"]
-
+        """Stream live targets from the Meta Quest to the WBC."""       
+        while not self._stop_event.is_set():
+            target: TeleopTargets = self.teleop.compute_target()
+            if target is None:
+                self.trajectory_rate.sleep()
+                continue
+            
             duration = self.trajectory_rate.dt
             timestamp = time.monotonic()
-
+            
             self.wbc.update_targets(
-                left_pos,
-                left_quat,
-                right_pos,
-                right_quat,
-                left_width=left_width,
-                right_width=right_width,
-                head_pos=head_pos,
-                head_quat=head_quat,
+                left_pos=target.left_pos,
+                left_quat=target.left_quat,
+                right_pos=target.right_pos,
+                right_quat=target.right_quat,
+                left_width=target.left_width,
+                right_width=target.right_width,
+                head_pos=target.head_pos,
+                head_quat=target.head_quat,
                 duration=duration,
-                timestamp=timestamp,
+                timestamp=timestamp
             )
-            self.trajectory_index += 1 
-            self.trajectory_rate.sleep()  
-
-        print("[trajectory] streaming complete.")
-
+            self.trajectory_rate.sleep()
 
     def run(self) -> None:
         self._trajectory_thread = threading.Thread(
-            target=self.trajectory_loop, name="trajectory_streamer", daemon=True
+            target=self.trajectory_loop, name="teleop_streamer", daemon=True
         )
         self._trajectory_thread.start()
 
         try:
             if self.headless:
-                while True:
+                while not self._stop_event.is_set():
                     self.viewer_rate.sleep()
             else:
                 while self.viewer.is_running():
                     self.visualize_loop()
         except KeyboardInterrupt:
+            self._stop_event.set()
             return
 
     def close(self) -> None:
+        self._stop_event.set()
+        if self._trajectory_thread is not None:
+            self._trajectory_thread.join(timeout=1.0)
+        self.teleop.stop()
         if self.viewer is not None:
             try:
                 self.viewer.close()
             except Exception:  # pragma: no cover - best effort cleanup
                 pass
 
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="RBY1 whole-body IK GUI decoupled from WBC thread")
+    parser = argparse.ArgumentParser(description="RBY1 whole-body teleop GUI driven by Meta Quest")
     parser.add_argument(
-        "--trajectory",
-        default=PROJECT_ROOT + "/demo/dataset_plan.pkl",
-        help="Path to a pickle file containing trajectory episodes",
+        "--local_ip",
+        required=True,
+        help="Local Wi-Fi (or LAN) IP address where the Meta Quest should stream controller poses.",
     )
     parser.add_argument(
-        "--index",
-        default=0,
-        type=int,
-        help="Index of the trajectory episode to use",
+        "--meta_quest_ip",
+        required=True,
+        help="IP address of the Meta Quest headset on the same network.",
     )
     parser.add_argument(
         "--headless",
         action="store_true",
         help="Skip launching the MuJoCo viewer (useful for debugging controller only).",
     )
+    parser.add_argument(
+        "--save",
+        action="store_true",
+        help="Persist computed teleop trajectory as a dataset-style pickle under demo/.",
+    )
     args = parser.parse_args()
+
+    if args.headless:
+        os.environ.setdefault("MUJOCO_GL", "egl")
 
     wbc = RBY1WBC()
     wbc.start()
+    teleop = TeleopVR(wbc=wbc, local_ip=args.local_ip, meta_quest_ip=args.meta_quest_ip, save_trajectory=args.save)
+    if not teleop.initialize():
+        raise Exception("Teleoperation can not be initialized!")
 
-    poses_list, widths_list = load_trajectory(traj_dir=args.trajectory, client=wbc, index=args.index, use_head=True, align_mode="relative")
-    if args.headless:
-        os.environ.setdefault("MUJOCO_GL", "egl")
     gui = None
     try:
-        gui = RBY1WBCTrajectory(wbc=wbc, headless=args.headless, poses_list=poses_list, widths_list=widths_list)
+        gui = RBY1WBCTeleopVR(wbc=wbc, teleop=teleop, headless=args.headless)
         gui.run()
     finally:
         if gui is not None:
             gui.close()
         wbc.stop()
+
 
 if __name__ == "__main__":
     main()

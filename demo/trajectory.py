@@ -43,8 +43,6 @@ class Trajectory:
         # High-level metadata
         self.tasks: List[str] = trajectory_data.get("tasks", [])
         self.episode_name: str = trajectory_data.get("episode_name", "")
-        self.frequency: float = 10 # Hz. Currently fixed to 10
-        self.length: int = 0 # To be set at last
 
         # Gripper info
         self.grippers_left: GripperTrajectory = self._parse_list_to_dataclass(
@@ -58,7 +56,7 @@ class Trajectory:
         )
 
         # Camera info
-        self.cameras_left: CameraTrajectcory = self._parse_list_to_dataclass(
+        self.cameras_left: CameraTrajectory = self._parse_list_to_dataclass(
             trajectory_data.get("cameras_left", []), CameraTrajectory
         )
         self.cameras_right: CameraTrajectory = self._parse_list_to_dataclass(
@@ -67,12 +65,6 @@ class Trajectory:
         self.cameras_head: CameraTrajectory = self._parse_list_to_dataclass(
             trajectory_data.get("cameras_head", []), CameraTrajectory
         )
-
-        # Metadata
-        if self.grippers_left and getattr(self.grippers_left, "tcp_pose", None) is not None:
-            self.length = self.grippers_left.tcp_pose.shape[0]
-        else:
-            self.length = trajectory_data.get("length", 0)
 
     # Helper for list[dict] → dataclass
     def _parse_list_to_dataclass(self, data, cls):
