@@ -17,7 +17,7 @@ from flask_socketio import SocketIO
 from scipy.spatial.transform import Rotation as R
 
 from demo.trajectory_recorder import TrajectoryRecorder
-from .teleop_targets import TeleopTargets
+from rby1.ee_targets import EETargets
 from .session_logger import SessionLogger, generate_session_name
 
 
@@ -431,7 +431,7 @@ class TeleopIphone:
         transform[:3, 3] = pos
         return transform
 
-    def compute_target(self) -> Optional[TeleopTargets]:
+    def compute_target(self) -> Optional[EETargets]:
         self._raise_if_fatal()
         with self._pose_lock:
             latest = {k: (ts, pose.copy()) for k, (ts, pose) in self._latest_poses.items()}
@@ -457,7 +457,7 @@ class TeleopIphone:
         left_pos, left_quat = _matrix_to_pose(left_transform)
         right_pos, right_quat = _matrix_to_pose(right_transform)
 
-        targets = TeleopTargets(
+        targets = EETargets(
             left_pos=left_pos,
             left_quat=left_quat,
             right_pos=right_pos,

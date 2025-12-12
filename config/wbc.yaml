@@ -20,6 +20,10 @@ use_interpolation: true
 command_timeout_sec: 0.1
 low_pass_freq_hz: 1
 
+# Base control gains
+base_error_gain: [0.2, 0.2, 0.2]  # TRI's IK runs at 500hz and ours at 100hz, so scale the gains by 5x
+base_velocity_gain: [0.1, 0.1, 0.12] # Might need to tune this more
+
 admittance:
   enabled: false
   desired_wrench:

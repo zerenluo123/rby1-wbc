@@ -13,9 +13,9 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 from demo.trajectory_recorder import TrajectoryRecorder
-from .teleop_targets import TeleopTargets
 from .session_logger import SessionLogger, generate_session_name
 from .vr_control_state import VRControlState
+from rby1.ee_targets import EETargets
 
 
 logging.basicConfig(
@@ -34,8 +34,8 @@ T_CONV = np.array(
 )
 
 
-LOCAL_PORT = 5005
-META_QUEST_PORT = 6000
+DEFAULT_LOCAL_PORT = 5005
+DEFAULT_META_QUEST_PORT = 6000
 
 
 def _pose_to_matrix(position, rotation_quat):
@@ -53,11 +53,15 @@ class TeleopVR:
         wbc,
         local_ip: str,
         meta_quest_ip: str,
+        local_port: int = DEFAULT_LOCAL_PORT,
+        meta_quest_port: int = DEFAULT_META_QUEST_PORT,
         save_trajectory: bool = False,
     ):
         self.wbc = wbc
         self.local_ip = local_ip
         self.meta_quest_ip = meta_quest_ip
+        self.local_port = int(local_port)
+        self.meta_quest_port = int(meta_quest_port)
 
         self.vr_state = VRControlState()
         self._controller_lock = threading.Lock()
@@ -94,10 +98,10 @@ class TeleopVR:
             print(f"Meta Quest is not connected to the same network: {self.meta_quest_ip}")
 
         if rv:
-            payload = {"ip": self.local_ip, "port": LOCAL_PORT}
+            payload = {"ip": self.local_ip, "port": self.local_port}
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                 message = json.dumps(payload).encode("utf-8")
-                sock.sendto(message, (self.meta_quest_ip, META_QUEST_PORT))
+                sock.sendto(message, (self.meta_quest_ip, self.meta_quest_port))
         return rv
 
     def start(self) -> None:
@@ -118,7 +122,7 @@ class TeleopVR:
 
     def _teleop_loop(self) -> None:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server_sock:
-            server_sock.bind((self.local_ip, LOCAL_PORT))
+            server_sock.bind((self.local_ip, self.local_port))
             server_sock.settimeout(1.0)
             while not self._stop_event.is_set():
                 try:
@@ -150,7 +154,7 @@ class TeleopVR:
             self.vr_state.event_right_a_pressed |= bool(buttons.get("primaryButton"))
             self.vr_state.event_right_b_pressed |= bool(buttons.get("secondaryButton"))
 
-    def compute_target(self) -> Optional[TeleopTargets]:
+    def compute_target(self) -> Optional[EETargets]:
         """Compute the next teleoperation target for the WBC."""
         snapshot = self.wbc.get_latest_robot_state()
         if snapshot is None or not snapshot.is_valid:
@@ -204,7 +208,7 @@ class TeleopVR:
         if head_target_pose is not None:
             head_pos, head_quat = self._matrix_to_pose(head_target_pose)
 
-        targets = TeleopTargets(
+        targets = EETargets(
             left_pos=left_pos,
             left_quat=left_quat,
             right_pos=right_pos,
