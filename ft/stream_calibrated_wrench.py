@@ -220,13 +220,13 @@ def main() -> None:
         left_width, right_width = wbc.get_latest_gripper_widths()
 
         wbc.update_targets(
-            max(0.5, args.stable_duration),
-            left_pos=left_pos,
-            left_quat=left_quat,
-            right_pos=right_pos,
-            right_quat=right_quat,
+            left_pos,
+            left_quat,
+            right_pos,
+            right_quat,
             left_width=left_width,
             right_width=right_width,
+            duration=max(0.5, args.stable_duration),
         )
 
         arm_quat = left_quat if args.arm == "left" else right_quat
@@ -294,13 +294,13 @@ def main() -> None:
                     else:
                         right_target_quat = quat.copy()
                     wbc.update_targets(
-                        args.move_duration,
-                        left_pos=left_pos,
-                        left_quat=left_target_quat,
-                        right_pos=right_pos,
-                        right_quat=right_target_quat,
+                        left_pos,
+                        left_target_quat,
+                        right_pos,
+                        right_target_quat,
                         left_width=left_width,
                         right_width=right_width,
+                        duration=args.move_duration,
                     )
                 return _cmd
 
