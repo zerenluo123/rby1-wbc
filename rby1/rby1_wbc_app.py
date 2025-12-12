@@ -63,7 +63,6 @@ class RBY1WBCApp:
             duration = target.duration if target.duration and target.duration > 0.0 else self.trajectory_rate.dt
             timestamp = target.timestamp if target.timestamp and target.timestamp > 0.0 else time.monotonic()
             self.wbc.update_targets(
-                duration,
                 left_pos=target.left_pos,
                 left_quat=target.left_quat,
                 right_pos=target.right_pos,
@@ -72,6 +71,7 @@ class RBY1WBCApp:
                 right_width=target.right_width,
                 head_pos=target.head_pos,
                 head_quat=target.head_quat,
+                duration=duration,
                 timestamp=timestamp,
             )
             self.trajectory_rate.sleep()

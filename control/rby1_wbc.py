@@ -181,7 +181,6 @@ class RBY1WBC:
 
     def update_targets(
         self,
-        duration: float,
         left_pos: np.ndarray,
         left_quat: np.ndarray,
         right_pos: np.ndarray,
@@ -190,10 +189,15 @@ class RBY1WBC:
         right_width: Optional[float] = None,
         head_pos: Optional[np.ndarray] = None,
         head_quat: Optional[np.ndarray] = None,
+        duration: Optional[np.ndarray] = None,
         timestamp: Optional[float] = None,
     ) -> None:
+        if duration is None:
+            duration = np.array(
+                [1.0 / self.trajectory_frequency_hz], dtype=float
+            )
+            
         self.ee_targets.set_targets(
-            duration,
             left_pos,
             left_quat,
             right_pos,
@@ -202,6 +206,7 @@ class RBY1WBC:
             right_width=right_width,
             head_pos=head_pos,
             head_quat=head_quat,
+            duration=duration,
             timestamp=timestamp,
         )
 

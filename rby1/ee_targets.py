@@ -100,7 +100,6 @@ class EETargets:
 
     def set_targets(
         self,
-        duration: float,
         left_pos: np.ndarray,
         left_quat: np.ndarray,
         right_pos: np.ndarray,
@@ -109,6 +108,7 @@ class EETargets:
         right_width: Optional[float] = None,
         head_pos: Optional[np.ndarray] = None,
         head_quat: Optional[np.ndarray] = None,
+        duration: Optional[float] = None,
         timestamp: Optional[float] = None,
     ) -> None:
         with self.lock:
@@ -147,7 +147,8 @@ class EETargets:
             self.head_pos = None if head_pos is None else head_pos.copy()
             self.head_quat = None if head_quat is None else head_quat.copy()
 
-            self.duration = max(0.0, float(duration))
+            duration_value = 0.0 if duration is None else max(0.0, float(duration))
+            self.duration = duration_value
             self.timestamp = now
 
     def get_for_ik(self, use_interpolation: bool = False) -> Tuple[
