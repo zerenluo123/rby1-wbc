@@ -3,10 +3,3 @@ local_ip: "192.168.50.1"        # IP of this machine on the same network as the 
 meta_quest_ip: "192.168.50.76"  # IP of the Meta Quest headset
 local_port: 5005                # UDP port to bind locally
 meta_quest_port: 6000           # UDP port on the headset to send discovery packet
-
-# Teleop smoothing and per-step clamps (applied to incoming targets before IK)
-teleop_filter:
-  enabled: true
-  output_frequency_hz: 120.0       # smoothing cutoff; higher follows input faster
-  max_translation_m_per_sec: 1.2   # per-axis speed limit used to clamp each step
-  max_rotation_deg_per_sec: 240.0  # angular speed limit used to clamp each step

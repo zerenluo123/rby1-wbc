@@ -19,12 +19,6 @@ from scipy.spatial.transform import Rotation as R
 from demo.trajectory_recorder import TrajectoryRecorder
 from rby1.ee_targets import EETargets
 from .session_logger import SessionLogger, generate_session_name
-from .target_filter import (
-    PoseFilter,
-    TeleopFilterConfig,
-    load_teleop_filter_config,
-    DEFAULT_TELEOP_IPHONE_CONFIG,
-)
 
 
 logging.basicConfig(
@@ -128,7 +122,6 @@ class TeleopIphone:
         port: int = 5555,
         save_trajectory: bool = False,
         use_portrait_mode: bool = True,
-        filter_config: Optional[TeleopFilterConfig] = None,
     ):
         self.wbc = wbc
         self.host = host
@@ -175,8 +168,6 @@ class TeleopIphone:
         self.session_name = generate_session_name()
         self._session_logger = SessionLogger(self.session_name)
         self._trajectory_recorder = TrajectoryRecorder(self.session_name, enabled=save_trajectory)
-        self._target_filter_config = filter_config or load_teleop_filter_config(DEFAULT_TELEOP_IPHONE_CONFIG)
-        self._target_filter = PoseFilter(self._target_filter_config)
 
     def _register_handlers(self) -> None:
         self._socketio.on_event("connect", self._on_connect)
@@ -465,10 +456,6 @@ class TeleopIphone:
         head_pos = head_quat = None
         left_pos, left_quat = _matrix_to_pose(left_transform)
         right_pos, right_quat = _matrix_to_pose(right_transform)
-
-        now = time.monotonic()
-        left_pos, left_quat = self._target_filter.filter("left", left_pos, left_quat, now)
-        right_pos, right_quat = self._target_filter.filter("right", right_pos, right_quat, now)
 
         targets = EETargets(
             left_pos=left_pos,
