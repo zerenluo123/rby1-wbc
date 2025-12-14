@@ -95,9 +95,14 @@ cmake .. -G "Unix Makefiles" \
 cmake --build .
 ```
 
-## Step 8: Install (Optional)
+## Step 8: Install
 ```bash
 sudo make install
+```
+
+## Step 9: Install python binding
+```bash
+pip install -e .
 ```
 
 ## Troubleshooting

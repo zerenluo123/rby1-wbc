@@ -16,5 +16,6 @@ The RB-Y1 robot supports gripper control through locally emulated devices. To us
 4. **On your local PC, start the gripper client:**
     ```bash
     sudo apt install -y socat # first time
+    chmod +x ~/gripper_client.sh # first time
     sudo ~/gripper_client.sh start
    ```

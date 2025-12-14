@@ -1,6 +1,163 @@
 # setting up the cameras
 
+If using ethernet:
 first configure the ip address - set the ethernet port's address to 192.168.88.1
+
+If using fiber card:
+install intel i40e driver
+Steps to Set Up the i40e Driver
+Step 1: Install Kernel Headers
+
+Ensure that you have the correct kernel headers installed for your current kernel.
+
+sudo apt install linux-headers-$(uname -r)
+
+
+This installs the necessary headers required for compiling kernel modules.
+
+Step 2: Download and Extract i40e Driver
+
+If you haven't done so already, download the driver package and extract it.
+
+cd ~/Downloads
+# Example: replace with your actual path if necessary
+tar -xvf i40e-<version>.tar.gz
+cd i40e-<version>/src
+
+Step 3: Build the i40e Driver
+
+Run the following commands to clean and build the i40e driver.
+
+make clean
+make
+
+Step 4: Sign the i40e Module (with Secure Boot)
+
+Since Secure Boot is enabled, you'll need to sign the i40e module so it can be loaded by the system.
+
+1. Create Module Signing Keys
+
+First, create a directory to store your signing keys:
+
+sudo mkdir -p /root/module_signing_keys
+
+
+Then generate a new private and public signing key pair:
+
+sudo openssl req -new -x509 -newkey rsa:2048 \
+  -keyout /root/module_signing_keys/MOK.priv \
+  -outform DER -out /root/module_signing_keys/MOK.der \
+  -nodes -days 36500 \
+  -subj "/CN=Local Kernel Module Signing/"
+
+
+This will generate:
+
+MOK.priv (private key)
+
+MOK.der (public key)
+
+2. Enroll the Public Key with Secure Boot
+
+To enable Secure Boot to trust the kernel module, enroll the public key:
+
+sudo mokutil --import /root/module_signing_keys/MOK.der
+
+
+Reboot your system and you’ll be prompted with the MOK Manager screen.
+
+Select “Enroll MOK”, choose Continue, and enter the password to enroll the key.
+
+After rebooting, you can verify that the key is enrolled using:
+
+sudo mokutil --list-enrolled
+
+
+It should list the key you just enrolled.
+
+3. Sign the i40e Module
+
+Now that the key is enrolled, sign the i40e driver module with the private key:
+
+sudo /usr/src/linux-headers-$(uname -r)/scripts/sign-file sha256 \
+  /root/module_signing_keys/MOK.priv \
+  /root/module_signing_keys/MOK.der \
+  /lib/modules/$(uname -r)/updates/drivers/net/ethernet/intel/i40e/i40e.ko
+
+
+This step ensures that Secure Boot will trust the i40e driver when loading.
+
+Step 5: Install the Driver
+
+Now, install the compiled i40e driver:
+
+sudo make install
+
+
+Run the depmod command to update module dependencies:
+
+sudo depmod -a
+
+Step 6: Load the i40e Driver
+
+Finally, load the i40e driver into the kernel:
+
+sudo modprobe i40e
+
+Step 7: Verify the Installation
+
+Verify that the i40e module is loaded:
+
+lsmod | grep i40e
+
+
+You should see something like:
+
+i40e                  647168  0
+
+Step 8: Bring Up the Network Interface
+
+The interface name might be enp2s0f0np0 or something similar. Check the name with:
+
+ip link
+
+
+Then, bring it up:
+
+sudo ip link set enp2s0f0np0 up
+
+
+You can configure the IP address either manually or use Netplan/NetworkManager for a persistent configuration. Here’s how to manually assign an IP address:
+
+sudo ip addr add 192.168.88.2/24 dev enp2s0f0np0
+
+
+To make this persistent, use NetworkManager or Netplan:
+
+Netplan config example:
+
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    enp2s0f0np0:
+      dhcp4: no
+      addresses:
+        - 192.168.88.2/24
+
+
+After configuring Netplan, apply changes with:
+
+sudo netplan apply
+
+Step 9: Verify the Network Configuration
+
+Finally, verify the network configuration:
+
+ip addr show enp2s0f0np0
+
+
+You should see the configured IP address (192.168.88.2).
 
 install aravis
 https://aravisproject.github.io/aravis/aravis-stable/building.html
@@ -11,7 +168,7 @@ sudo apt upgrade
 sudo apt install -f
 sudo apt install libxml2-dev gobject-introspection libgirepository1.0-dev
 cd ~/aravis-0.8.35
-meson setup buildsudo apt install gstreamer1.0-plugins-bad
+meson setup build
 cd build
 ninja
 sudo ninja install
