@@ -27,6 +27,7 @@ from . import (
 from ft.calibrator import FTCalibrator
 
 from gripper.gripper import Gripper
+from gripper.gripper_client import RemoteGripper
 
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 
@@ -149,15 +150,18 @@ class RBY1WBC:
         self._build_joint_mapping()
         self._extract_base_origin()
 
-        # Initialize Gripper
-        self.gripper = Gripper()
-        if self.gripper.initialize():
-            self.gripper.homing()
-            self.gripper.start()
-            print("Successfully initialized gripper")
-        else:
+        # Initialize Gripper (local or remote based on config)
+        gripper_cfg = self.config.get("gripper", {})
+        try:
+            self.gripper = self._setup_gripper(gripper_cfg)
+            if self.gripper is not None:
+                mode = gripper_cfg.get("mode", "local")
+                print(f"Successfully initialized {mode} gripper")
+            else:
+                print("Gripper disabled in config")
+        except Exception as exc:
             self.gripper = None
-            print("Failed to initialize gripper")
+            print(f"Failed to initialize gripper: {exc}")
         
         self._state_thread: Optional[threading.Thread] = None
         self._ik_thread: Optional[threading.Thread] = None
@@ -185,6 +189,62 @@ class RBY1WBC:
             self._state_thread.join(timeout=join_timeout)
         self.controller.stop()
         self._threads_started = False
+
+    def _setup_gripper(self, cfg: Mapping[str, Any]) -> Optional[Any]:
+        mode = str(cfg.get("mode", "local")).lower()
+        if mode in ("none", "disabled"):
+            return None
+
+        auto_initialize = bool(cfg.get("auto_initialize", mode == "local"))
+        auto_homing = bool(cfg.get("auto_homing", mode == "local"))
+        auto_start = bool(cfg.get("auto_start", True))
+        verbose_init = bool(cfg.get("verbose_init", False))
+
+        if mode == "remote":
+            host = cfg.get("host")
+            if not host:
+                raise ValueError("Remote gripper mode requires 'host' in config.")
+            port = int(cfg.get("port", 5678))
+            timeout = float(cfg.get("timeout", 2.0))
+            gripper = RemoteGripper(host=host, port=port, timeout=timeout)
+            self._run_gripper_sequence(
+                gripper,
+                do_initialize=auto_initialize,
+                do_homing=auto_homing,
+                do_start=auto_start,
+                verbose=verbose_init,
+            )
+            return gripper
+
+        if mode == "local":
+            gripper = Gripper()
+            self._run_gripper_sequence(
+                gripper,
+                do_initialize=auto_initialize,
+                do_homing=auto_homing,
+                do_start=auto_start,
+                verbose=verbose_init,
+            )
+            return gripper
+
+        raise ValueError(f"Unknown gripper mode '{mode}'")
+
+    def _run_gripper_sequence(
+        self,
+        gripper: Any,
+        *,
+        do_initialize: bool,
+        do_homing: bool,
+        do_start: bool,
+        verbose: bool,
+    ) -> None:
+        if do_initialize:
+            if not gripper.initialize(verbose=verbose):
+                raise RuntimeError("Gripper initialize() returned False")
+        if do_homing:
+            gripper.homing()
+        if do_start:
+            gripper.start()
 
     def update_targets(
         self,
