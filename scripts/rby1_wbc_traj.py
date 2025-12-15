@@ -50,6 +50,10 @@ class RBY1WBCTrajectory(RBY1WBCApp):
         )
         return pos, quat_wxyz
     
+    def on_target_rejected(self, target: EETargets) -> None:
+        rejected_index = max(self.trajectory_index - 1, 0)
+        print(f"[trajectory] target {rejected_index} rejected; skipping to next command.")
+
     def get_target(self) -> Optional[EETargets]:
         if self.trajectory_index == 0:
             input("Press [Enter] to start streaming the trajectory.")
