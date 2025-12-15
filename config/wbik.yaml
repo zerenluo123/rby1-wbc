@@ -27,7 +27,7 @@ safety_distance: 0.01
 influence_distance: 0.02
 
 # Velocity limits
-velocity_limit_scale: 1.0
+velocity_limit_scale: 0.9
 base_xy_velocity_limit: 1.0   # m/s
 base_rz_velocity_limit: 1.0   # rad/s
 joint_velocity_limits:
