@@ -127,13 +127,13 @@ class FTCalibrator:
 
         gripper_left, gripper_right = self.wbc.get_latest_gripper_widths()
         self.wbc.update_targets(
-            self.cfg.move_duration,
-            left_pos=left_target_pos,
-            left_quat=left_target_quat,
-            right_pos=right_target_pos,
-            right_quat=right_target_quat,
+            left_target_pos,
+            left_target_quat,
+            right_target_pos,
+            right_target_quat,
             left_width=gripper_left,
             right_width=gripper_right,
+            duration=self.cfg.move_duration,
         )
         time.sleep(self.cfg.settle_time)
 
@@ -158,13 +158,13 @@ class FTCalibrator:
                         right_target_quat = target_quat
 
                     self.wbc.update_targets(
-                        self.cfg.move_duration,
-                        left_pos=left_target_pos,
-                        left_quat=left_target_quat,
-                        right_pos=right_target_pos,
-                        right_quat=right_target_quat,
+                        left_target_pos,
+                        left_target_quat,
+                        right_target_pos,
+                        right_target_quat,
                         left_width=gripper_left,
                         right_width=gripper_right,
+                        duration=self.cfg.move_duration,
                     )
                     self._wait_for_settle(target_quat)
                     wrench_avg = self._sample_wrench()
@@ -180,13 +180,13 @@ class FTCalibrator:
         else:
             right_target_quat = initial_quat.copy()
         self.wbc.update_targets(
-            self.cfg.move_duration,
-            left_pos=left_target_pos,
-            left_quat=left_target_quat,
-            right_pos=right_target_pos,
-            right_quat=right_target_quat,
+            left_target_pos,
+            left_target_quat,
+            right_target_pos,
+            right_target_quat,
             left_width=gripper_left,
             right_width=gripper_right,
+            duration=self.cfg.move_duration,
         )
         time.sleep(self.cfg.settle_time)
 

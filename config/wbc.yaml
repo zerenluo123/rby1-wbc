@@ -21,8 +21,14 @@ command_timeout_sec: 0.1
 low_pass_freq_hz: 1
 
 # Base control gains
-base_error_gain: [0.2, 0.2, 0.2]  # TRI's IK runs at 500hz and ours at 100hz, so scale the gains by 5x
-base_velocity_gain: [0.1, 0.1, 0.12] # Might need to tune this more
+base_error_gain: [0, 0, 0]  # TRI's IK runs at 500hz and ours at 100hz, so scale the gains by 5x
+base_velocity_gain: [0.1, 0.1, 0.1] # Might need to tune this more
+
+# Incremental safety limits (commands farther than these from current pose are rejected)
+incremental_safety:
+  enabled: true
+  max_translation_m: 0.2      # maximum linear delta per update
+  max_rotation_deg: 40.0       # maximum angular delta per update
 
 admittance:
   enabled: false

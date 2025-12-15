@@ -469,3 +469,8 @@ class TeleopIphone:
         )
         self._trajectory_recorder.log_target(targets, timestamp=time.time())
         return targets
+
+    def on_target_rejected(self) -> None:
+        logging.info(
+            "Target rejected: move the iPhone controllers back near their last pose to continue teleoperating."
+        )

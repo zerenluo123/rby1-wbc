@@ -31,7 +31,17 @@ class RBY1WBCTeleop(RBY1WBCApp):
     def get_target(self) -> Optional[EETargets]:
         return self.teleop.compute_target()
 
-def build_teleop(mode:str, wbc: RBY1WBC, config: Dict[str, Any], save_trajectory: bool) -> Any:
+    def on_target_rejected(self, target: EETargets) -> None:
+        handler = getattr(self.teleop, "on_target_rejected", None)
+        if callable(handler):
+            handler()
+
+def build_teleop(
+    mode: str,
+    wbc: RBY1WBC,
+    config: Dict[str, Any],
+    save_trajectory: bool,
+) -> Any:
     if mode == "vr":
         local_ip = config.get("local_ip")
         meta_quest_ip = config.get("meta_quest_ip")
@@ -102,7 +112,12 @@ def main() -> None:
     # Run 
     wbc = RBY1WBC()
     wbc.start()
-    teleop = build_teleop(mode, wbc, config, save_trajectory=save_trajectory)
+    teleop = build_teleop(
+        mode,
+        wbc,
+        config,
+        save_trajectory=save_trajectory,
+    )
     if not teleop.initialize():
         wbc.stop()
         raise RuntimeError("Teleoperation can not be initialized!")

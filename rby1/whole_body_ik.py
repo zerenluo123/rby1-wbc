@@ -98,8 +98,10 @@ class RBY1WholeBodyIK:
         self.head_pos_cost = float(require("head_pos_cost"))
         self.head_ori_cost = np.asarray(require("head_ori_cost"), dtype=float)
         self.torso_upright_ori_cost = float(require("torso_upright_ori_cost"))
-        self.posture_cost_main = float(require("posture_cost_main"))
-        self.posture_cost_head = float(require("posture_cost_head"))
+        self.nominal_posture_cost_main = float(require("nominal_posture_cost_main"))
+        self.nominal_posture_cost_head = float(require("nominal_posture_cost_head"))
+        self.current_posture_cost_main = float(require("current_posture_cost_main"))
+        self.current_posture_cost_head = float(require("current_posture_cost_head"))
         self.com_over_base_pos_cost = float(require("com_over_base_pos_cost"))
         self.com_target_height = float(require("com_target_height"))
         self.base_ground_position_cost = np.asarray(require("base_ground_position_cost"), dtype=float)
@@ -147,9 +149,14 @@ class RBY1WholeBodyIK:
         assert len(self.right_arm_qpos_indices) == self.nominal_right_arm_angles.size
         assert len(self.left_arm_qpos_indices) == self.nominal_left_arm_angles.size
         assert len(self.head_qpos_indices) == self.nominal_head_angles.size
-        self.posture_cost_vector = np.full(self.model.nv, self.posture_cost_main, dtype=float)
+
+        self.nominal_posture_cost_vector = np.full(self.model.nv, self.nominal_posture_cost_main, dtype=float)
         for dof_idx in self.head_dof_indices:
-            self.posture_cost_vector[dof_idx] = self.posture_cost_head 
+            self.nominal_posture_cost_vector[dof_idx] = self.nominal_posture_cost_head
+
+        self.current_posture_cost_vector = np.full(self.model.nv, self.current_posture_cost_main, dtype=float)
+        for dof_idx in self.head_dof_indices:
+            self.current_posture_cost_vector[dof_idx] = self.current_posture_cost_head
 
         self.environment_geoms = None
         # Limits cache (built once and reused to avoid per-iteration overhead)
@@ -361,12 +368,15 @@ class RBY1WholeBodyIK:
         base_ground_task.set_target(mink.SE3.from_matrix(base_target_matrix))
         tasks.append(base_ground_task)
         
-        # Main posture task
-        posture_task = self._posture_task
-        # Set reference posture
-        reference_qpos = self._get_nominal_posture(current_qpos)
-        posture_task.set_target(reference_qpos)
-        tasks.append(posture_task)
+        # Nominal posture task (keep robot near reference pose)
+        nominal_posture_task = self._nominal_posture_task
+        nominal_posture_task.set_target(self._get_nominal_posture(current_qpos))
+        tasks.append(nominal_posture_task)
+
+        # Current posture task (acts like velocity damping)
+        current_posture_task = self._current_posture_task
+        current_posture_task.set_target(current_qpos.copy())
+        tasks.append(current_posture_task)
 
         # Extend with cached tasks
         tasks.extend(self._cached_tasks)
@@ -602,8 +612,8 @@ class RBY1WholeBodyIK:
             frame_type="body",
             root_name=self.base_name,
             root_type="body",
-            position_cost=self.com_over_base_pos_cost,  # Medium cost for stability
-            orientation_cost=0.0,  # Don't constrain relative orientation
+            position_cost=[self.com_over_base_pos_cost, self.com_over_base_pos_cost, 0.0],
+            orientation_cost=0.0,
             lm_damping=1e-4,
         )
         # Torso should be above base center with some tolerance
@@ -646,8 +656,12 @@ class RBY1WholeBodyIK:
             orientation_cost=self.base_ground_orientation_cost,
             lm_damping=1e-6,
         )
-        self._posture_task = mink.PostureTask(
+        self._nominal_posture_task = mink.PostureTask(
             model=self.model,
-            cost=self.posture_cost_vector,
+            cost=self.nominal_posture_cost_vector,
+        )
+        self._current_posture_task = mink.PostureTask(
+            model=self.model,
+            cost=self.current_posture_cost_vector,
         )
         
