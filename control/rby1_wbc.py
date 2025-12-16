@@ -1,3 +1,4 @@
+
 """Whole-body controller thread decoupled from any GUI interaction."""
 
 from __future__ import annotations
@@ -5,10 +6,8 @@ from __future__ import annotations
 import math
 import threading
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
-from queue import SimpleQueue
-from typing import Any, Mapping, Optional, Tuple, Union
+from typing import Any, Mapping, Optional, Tuple
 
 import mujoco
 import numpy as np
@@ -16,22 +15,20 @@ import yaml
 
 from loop_rate_limiters import RateLimiter
 
-from ik.rby1_whole_body_ik import RBY1WholeBodyIK
-
+from rby1.whole_body_ik import RBY1WholeBodyIK
+from rby1.ee_targets import EETargets, _normalize_quaternion
 from . import (
+    AdmittanceController,
+    AdmittanceControllerConfig,
     Config as ControllerConfig,
     RealtimeDriver,
     RobotSnapshot,
 )
+from ft.calibrator import FTCalibrator
 
 from gripper.gripper import Gripper
 
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
-# TRI's IK runs at 500 hz and ours at 100 hz, so scale the gains by 5x
-BASE_ERROR_GAIN = np.array([0.2, 0.2, 0.2], dtype=float)
-# Might need to tune this more
-# BASE_VELOCITY_GAIN = np.array([0.1, 0.1, 0.12], dtype=float)
-BASE_VELOCITY_GAIN = np.array([0.05, 0.05, 0.1], dtype=float)
 
 class RobotStateBuffer:
     """Stores the latest robot snapshot retrieved from the controller."""
@@ -66,204 +63,6 @@ class RobotStateBuffer:
             return self._gripper_widths
 
 
-@dataclass
-class SharedTargets:
-    """Thread-safe shared targets and current qpos snapshot for IK."""
-    lock: threading.Lock = field(default_factory=threading.Lock)
-    duration: float = 0.1 # 10Hz
-    target_set_timestamp: float = 0.0
-
-    left_gripper_pos_start: Optional[np.ndarray] = None
-    left_gripper_quat_start: Optional[np.ndarray] = None
-    left_gripper_width_start: Optional[float] = None
-    left_gripper_pos: Optional[np.ndarray] = None
-    left_gripper_quat: Optional[np.ndarray] = None
-    left_gripper_width: Optional[float] = None
-
-    right_gripper_pos_start: Optional[np.ndarray] = None
-    right_gripper_quat_start: Optional[np.ndarray] = None
-    right_gripper_width_start: Optional[float] = None
-    right_gripper_pos: Optional[np.ndarray] = None
-    right_gripper_quat: Optional[np.ndarray] = None
-    right_gripper_width: Optional[float] = None
-
-    head_target_pos_start: Optional[np.ndarray] = None
-    head_target_quat_start: Optional[np.ndarray] = None
-    head_target_pos: Optional[np.ndarray] = None
-    head_target_quat: Optional[np.ndarray] = None
-
-    def set_targets(
-        self,
-        left_pos: np.ndarray,
-        left_quat: np.ndarray,
-        right_pos: np.ndarray,
-        right_quat: np.ndarray,
-        left_width: Optional[float] = None,
-        right_width: Optional[float] = None,
-        head_pos: Optional[np.ndarray] = None,
-        head_quat: Optional[np.ndarray] = None,
-        duration: float = 0.1,
-        timestamp: Optional[float] = None,
-    ) -> None:
-        with self.lock:
-            now = time.monotonic() if timestamp is None else float(timestamp)
-
-            # Store previous targets for interpolation
-            prev_left_pos = self.left_gripper_pos.copy() if self.left_gripper_pos is not None else None
-            prev_left_quat = self.left_gripper_quat.copy() if self.left_gripper_quat is not None else None
-            prev_left_width = self.left_gripper_width
-
-            prev_right_pos = self.right_gripper_pos.copy() if self.right_gripper_pos is not None else None
-            prev_right_quat = self.right_gripper_quat.copy() if self.right_gripper_quat is not None else None
-            prev_right_width = self.right_gripper_width
-
-            prev_head_pos = self.head_target_pos.copy() if self.head_target_pos is not None else None
-            prev_head_quat = self.head_target_quat.copy() if self.head_target_quat is not None else None
-
-            self.left_gripper_pos_start = prev_left_pos if prev_left_pos is not None else left_pos.copy()
-            self.left_gripper_quat_start = prev_left_quat if prev_left_quat is not None else left_quat.copy()
-            self.left_gripper_width_start = prev_left_width if prev_left_width is not None else (None if left_width is None else float(left_width))
-
-            self.right_gripper_pos_start = prev_right_pos if prev_right_pos is not None else right_pos.copy()
-            self.right_gripper_quat_start = prev_right_quat if prev_right_quat is not None else right_quat.copy()
-            self.right_gripper_width_start = prev_right_width if prev_right_width is not None else (None if right_width is None else float(right_width))
-
-            self.head_target_pos_start = prev_head_pos if prev_head_pos is not None else (None if head_pos is None else head_pos.copy())
-            self.head_target_quat_start = prev_head_quat if prev_head_quat is not None else (None if head_quat is None else head_quat.copy())
-
-            # Set new targets
-            self.left_gripper_pos = left_pos.copy()
-            self.left_gripper_quat = left_quat.copy()
-            self.right_gripper_pos = right_pos.copy()
-            self.right_gripper_quat = right_quat.copy()
-            self.left_gripper_width = None if left_width is None else float(left_width)
-            self.right_gripper_width = None if right_width is None else float(right_width)
-            self.head_target_pos = None if head_pos is None else head_pos.copy()
-            self.head_target_quat = None if head_quat is None else head_quat.copy()
-
-            self.duration = max(0.0, float(duration))
-            self.target_set_timestamp = now
-
-    def get_for_ik(self, use_interpolation: bool = False) -> Tuple[
-        Optional[np.ndarray],
-        Optional[np.ndarray],
-        Optional[float],
-        Optional[np.ndarray],
-        Optional[np.ndarray],
-        Optional[float],
-        Optional[np.ndarray],
-        Optional[np.ndarray],
-    ]:
-        if not use_interpolation:
-            return self.get_target()
-        
-        # Return the linearly interpolated targets based on elapsed time since setting
-        current_time = time.monotonic()
-        with self.lock:
-            duration = max(self.duration, 0.0)
-            elapsed = max(0.0, current_time - self.target_set_timestamp)
-            alpha = min(1.0, elapsed / duration)
-
-            lt_p = _lerp_value(self.left_gripper_pos_start, self.left_gripper_pos, alpha)
-            lt_q = _slerp_quaternion(self.left_gripper_quat_start, self.left_gripper_quat, alpha)
-            lw = _lerp_value(self.left_gripper_width_start, self.left_gripper_width, alpha)
-
-            rt_p = _lerp_value(self.right_gripper_pos_start, self.right_gripper_pos, alpha)
-            rt_q = _slerp_quaternion(self.right_gripper_quat_start, self.right_gripper_quat, alpha)
-            rw = _lerp_value(self.right_gripper_width_start, self.right_gripper_width, alpha)
-
-            hp = _lerp_value(self.head_target_pos_start, self.head_target_pos, alpha)
-            hq = _slerp_quaternion(self.head_target_quat_start, self.head_target_quat, alpha)
-
-        return lt_p, lt_q, lw, rt_p, rt_q, rw, hp, hq
-
-    def get_target(self) -> Tuple[
-        Optional[np.ndarray],
-        Optional[np.ndarray],
-        Optional[float],
-        Optional[np.ndarray],
-        Optional[np.ndarray],
-        Optional[float],
-        Optional[np.ndarray],
-        Optional[np.ndarray],
-    ]:
-        with self.lock:
-            lt_p = None if self.left_gripper_pos is None else self.left_gripper_pos.copy()
-            lt_q = None if self.left_gripper_quat is None else self.left_gripper_quat.copy()
-            lw = self.left_gripper_width
-
-            rt_p = None if self.right_gripper_pos is None else self.right_gripper_pos.copy()
-            rt_q = None if self.right_gripper_quat is None else self.right_gripper_quat.copy()
-            rw = self.right_gripper_width
-
-            hp = None if self.head_target_pos is None else self.head_target_pos.copy()
-            hq = None if self.head_target_quat is None else self.head_target_quat.copy()
-
-        return lt_p, lt_q, lw, rt_p, rt_q, rw, hp, hq
-
-
-def _lerp_value(
-    start: Optional[Union[np.ndarray, float]],
-    end: Optional[Union[np.ndarray, float]],
-    alpha: float,
-):
-    if end is None:
-        return None
-    if start is None:
-        if isinstance(end, np.ndarray):
-            return end.copy()
-        return float(end)
-    alpha_clamped = max(0.0, min(1.0, alpha))
-    if isinstance(end, np.ndarray):
-        return (1.0 - alpha_clamped) * start + alpha_clamped * end
-    return float((1.0 - alpha_clamped) * start + alpha_clamped * end)
-
-
-def _normalize_quaternion(quat: np.ndarray) -> np.ndarray:
-    norm = np.linalg.norm(quat)
-    if norm < 1e-9:
-        return np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
-    return quat / norm
-
-
-def _slerp_quaternion(
-    start: Optional[np.ndarray],
-    end: Optional[np.ndarray],
-    alpha: float,
-) -> Optional[np.ndarray]:
-    if end is None:
-        return None
-    if start is None:
-        return end.copy()
-
-    start_norm = _normalize_quaternion(start)
-    end_norm = _normalize_quaternion(end)
-
-    dot = float(np.dot(start_norm, end_norm))
-    if dot < 0.0:
-        end_norm = -end_norm
-        dot = -dot
-    dot = max(-1.0, min(1.0, dot))
-
-    if dot > 0.9995:
-        result = start_norm + alpha * (end_norm - start_norm)
-        return _normalize_quaternion(result)
-
-    theta_0 = math.acos(dot)
-    sin_theta_0 = math.sin(theta_0)
-    if sin_theta_0 < 1e-6:
-        return end_norm.copy()
-
-    alpha_clamped = max(0.0, min(1.0, alpha))
-    theta = theta_0 * alpha_clamped
-    sin_theta = math.sin(theta)
-
-    s0 = math.cos(theta) - dot * sin_theta / sin_theta_0
-    s1 = sin_theta / sin_theta_0
-    result = s0 * start_norm + s1 * end_norm
-    return _normalize_quaternion(result)
-
-
 class RBY1WBC:
     """Worker that streams IK solutions to the realtime controller."""
 
@@ -272,24 +71,57 @@ class RBY1WBC:
         try:
             config_path = Path(config_path)
             with config_path.open("r", encoding="utf-8") as f:
-                self.config = yaml.safe_load(f) 
+                self.config = yaml.safe_load(f)
         except Exception as e:
             raise Exception(f"Exception while loading config file: {e}")
+        if not isinstance(self.config, dict):
+            raise ValueError(f"WBC config at {config_path} must be a mapping.")
+
+        def require(name: str):
+            if name not in self.config:
+                raise KeyError(f"Missing required WBC config key: {name}")
+            return self.config[name]
         
-        self.address = self.config["address"]
-        self.model_path = PROJECT_ROOT + self.config["model_path"]
-        self.init_position = self.config["init_position"]
-        self.state_frequency_hz = self.config["state_frequency_hz"]
-        self.trajectory_frequency_hz = self.config["trajectory_frequency_hz"]
-        self.ik_frequency_hz = self.config["ik_frequency_hz"]
-        self.use_interpolation = self.config["use_interpolation"]
-        self.command_timeout_sec = self.config["command_timeout_sec"]
+        self.address = require("address")
+        self.model_path = PROJECT_ROOT + str(require("model_path"))
+        self.init_position = require("init_position")
+        self.state_frequency_hz = require("state_frequency_hz")
+        self.trajectory_frequency_hz = require("trajectory_frequency_hz")
+        self.ik_frequency_hz = require("ik_frequency_hz")
+        self.use_interpolation = require("use_interpolation")
+        self.command_timeout_sec = require("command_timeout_sec")
+        self.base_error_gain = np.asarray(require("base_error_gain"), dtype=float)
+        self.base_velocity_gain = np.asarray(require("base_velocity_gain"), dtype=float)
+        self.low_pass_freq_hz = require("low_pass_freq_hz")
+
+        incremental_cfg = self.config.get("incremental_safety", {})
+        self.incremental_safety_enabled = bool(incremental_cfg.get("enabled", False))
+        self.max_incremental_translation = float(incremental_cfg.get("max_translation_m", 0.05))
+        self.max_incremental_rotation_deg = float(incremental_cfg.get("max_rotation_deg", 20.0))
+
+        admittance_cfg = require("admittance")
+        self.admittance_enabled = bool(admittance_cfg.get("enabled", False))
+        self._admittance_initialized = False
+        self._admittance_controller_left: Optional[AdmittanceController] = None
+        self._admittance_controller_right: Optional[AdmittanceController] = None
+        self._admittance_config_left: Optional[AdmittanceControllerConfig] = None
+        self._admittance_config_right: Optional[AdmittanceControllerConfig] = None
+        self._admittance_Tr: Optional[np.ndarray] = None
+        self._admittance_n_af: int = 0
+        self._admittance_wrench_left = np.zeros(6, dtype=float)
+        self._admittance_wrench_right = np.zeros(6, dtype=float)
+
+        if self.admittance_enabled:
+            self._configure_admittance(admittance_cfg)
+            self._ft_calibrator = FTCalibrator()
+        else:
+            self._ft_calibrator = None
 
         # Initialize Controller loops
         self.ik_rate = RateLimiter(frequency=self.ik_frequency_hz, warn=False)
         self.state_poll_rate = RateLimiter(frequency=self.state_frequency_hz, warn=False)
 
-        self.shared_targets = SharedTargets()
+        self.ee_targets = EETargets()
         self.robot_state = RobotStateBuffer()
 
         self._stop = threading.Event()
@@ -301,6 +133,17 @@ class RBY1WBC:
         self.model = mujoco.MjModel.from_xml_path(self.model_path)
         self.data = mujoco.MjData(self.model)
         mujoco.mj_forward(self.model, self.data)
+        self._left_ee_site_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_SITE, "end_effector_l"
+        )
+        self._right_ee_site_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_SITE, "end_effector_r"
+        )
+        self._head_ee_site_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_SITE, "head"
+        )
+        if self._left_ee_site_id < 0 or self._right_ee_site_id < 0:
+            raise RuntimeError("End-effector body IDs could not be resolved in the MuJoCo model.")
 
         self.ik_solver = RBY1WholeBodyIK()
         self._build_joint_mapping()
@@ -355,10 +198,24 @@ class RBY1WBC:
         right_width: Optional[float] = None,
         head_pos: Optional[np.ndarray] = None,
         head_quat: Optional[np.ndarray] = None,
-        duration: float = 0.1,
+        duration: Optional[float] = None,
         timestamp: Optional[float] = None,
-    ) -> None:
-        self.shared_targets.set_targets(
+    ) -> bool:
+        if not self._passes_incremental_safety(
+            left_pos,
+            left_quat,
+            right_pos,
+            right_quat,
+            head_pos,
+            head_quat,
+        ):
+            print("[wbc] target command rejected by incremental safety.")
+            return False
+
+        if duration is None:
+            duration = 1.0 / float(self.trajectory_frequency_hz)
+
+        self.ee_targets.set_targets(
             left_pos,
             left_quat,
             right_pos,
@@ -370,12 +227,92 @@ class RBY1WBC:
             duration=duration,
             timestamp=timestamp,
         )
+        return True
+
+    def _passes_incremental_safety(
+        self,
+        left_pos: np.ndarray,
+        left_quat: np.ndarray,
+        right_pos: np.ndarray,
+        right_quat: np.ndarray,
+        head_pos: Optional[np.ndarray] = None,
+        head_quat: Optional[np.ndarray] = None,
+    ) -> bool:
+        if not self.incremental_safety_enabled:
+            return True
+
+        snapshot = self.robot_state.load()
+        if snapshot is None or not snapshot.is_valid:
+            return True
+
+        current_qpos = self.snapshot_to_qpos(snapshot)
+        if current_qpos is None:
+            return True
+
+        with self._model_lock:
+            self.data.qpos[:] = current_qpos
+            mujoco.mj_forward(self.model, self.data)
+
+            left_rot = self.data.site_xmat[self._left_ee_site_id]
+            right_rot = self.data.site_xmat[self._right_ee_site_id]
+            left_quat_current = np.zeros(4)
+            right_quat_current = np.zeros(4)
+            mujoco.mju_mat2Quat(left_quat_current, left_rot)
+            mujoco.mju_mat2Quat(right_quat_current, right_rot)
+            left_pos_current = self.data.site_xpos[self._left_ee_site_id].copy()
+            right_pos_current = self.data.site_xpos[self._right_ee_site_id].copy()
+
+        left_delta = float(np.linalg.norm(np.asarray(left_pos, dtype=float) - left_pos_current))
+        left_rot_delta = self._quat_angle_deg(left_quat_current, left_quat)
+        if (
+            left_delta > self.max_incremental_translation
+            or left_rot_delta > self.max_incremental_rotation_deg
+        ):
+            print(
+                f"[wbc] incremental safety reject (left): dpos={left_delta:.3f}m"
+                f" drot={left_rot_delta:.1f}deg (limits {self.max_incremental_translation}m"
+                f" {self.max_incremental_rotation_deg}deg)"
+            )
+            return False
+
+        right_delta = float(np.linalg.norm(np.asarray(right_pos, dtype=float) - right_pos_current))
+        right_rot_delta = self._quat_angle_deg(right_quat_current, right_quat)
+        if (
+            right_delta > self.max_incremental_translation
+            or right_rot_delta > self.max_incremental_rotation_deg
+        ):
+            print(
+                f"[wbc] incremental safety reject (right): dpos={right_delta:.3f}m"
+                f" drot={right_rot_delta:.1f}deg (limits {self.max_incremental_translation}m"
+                f" {self.max_incremental_rotation_deg}deg)"
+            )
+            return False
+
+        return True
+
+    @staticmethod
+    def _quat_angle_deg(q1: np.ndarray, q2: np.ndarray) -> float:
+        q1n = _normalize_quaternion(np.asarray(q1, dtype=float))
+        q2n = _normalize_quaternion(np.asarray(q2, dtype=float))
+        dot = float(np.clip(np.dot(q1n, q2n), -1.0, 1.0))
+        angle_rad = 2.0 * math.acos(abs(dot))
+        return math.degrees(angle_rad)
 
     def get_latest_robot_state(self) -> Optional[RobotSnapshot]:
         return self.robot_state.load()
 
     def get_latest_gripper_widths(self) -> Tuple[float, float]:
         return self.robot_state.load_gripper_widths()
+
+    def get_end_effector_pose(
+        self, snapshot: Optional[RobotSnapshot] = None
+    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """Returns (left_pose, right_pose) in the world frame for a snapshot."""
+        snap = snapshot if snapshot is not None else self.robot_state.load()
+        qpos = self.snapshot_to_qpos(snap)
+        if qpos is None:
+            return None
+        return self._compute_end_effector_world_pose(qpos)
 
     def wait_for_first_state(self, timeout_sec: float = 5.0) -> Optional[RobotSnapshot]:
         deadline = time.monotonic() + timeout_sec
@@ -401,6 +338,7 @@ class RBY1WBC:
         config.command_timeout_us = int(
             round(max(command_timeout_sec, 0.0) * 1_000_000.0)
         )
+        config.low_pass_freq_hz = float(self.low_pass_freq_hz)
         controller = RealtimeDriver(config)
         controller.start()
         if not controller.wait_until_ready(timeout_sec=15.0):
@@ -450,6 +388,8 @@ class RBY1WBC:
         snapshot = self.wait_for_first_state()
         with self._model_lock:
             start_qpos = self._snapshot_to_qpos(snapshot)
+        if self.admittance_enabled:
+            self._initialize_admittance(start_qpos)
         start_body = self._compute_body_commands(start_qpos)
 
         delta = target_body - start_body
@@ -457,7 +397,7 @@ class RBY1WBC:
         if max_delta < 1e-6:
             self.controller.set_body_position_targets(target_body.tolist())
         else:
-            INIT_POSITION_MAX_STEP_DELTA = 0.005
+            INIT_POSITION_MAX_STEP_DELTA = 0.01
             steps = max(10, int(np.ceil(max_delta / INIT_POSITION_MAX_STEP_DELTA)))
             for step in range(1, steps + 1):
                 alpha = step / steps
@@ -483,12 +423,53 @@ class RBY1WBC:
             snapshot = self.robot_state.load()
             current_qpos: Optional[np.ndarray] = self.snapshot_to_qpos(snapshot)
             now = time.monotonic()
-            left_pos, left_quat, left_width, right_pos, right_quat, right_width, head_pos, head_quat = self.shared_targets.get_for_ik(use_interpolation=self.use_interpolation)
+            left_pos, left_quat, left_width, right_pos, right_quat, right_width, head_pos, head_quat = self.ee_targets.get_for_ik(use_interpolation=self.use_interpolation)
 
             if current_qpos is None or left_pos is None or right_pos is None:
                 self.ik_rate.sleep()
                 continue
+            
+            if self.admittance_enabled:
+                if not self._admittance_initialized:
+                    self._initialize_admittance(current_qpos)
 
+                left_pose_vec, right_pose_vec = self._compute_end_effector_world_pose(current_qpos)
+                if snapshot is None:
+                    print("[wbc] snapshot is None")
+                else:
+                    if not snapshot.left_ft_valid:
+                        print("[wbc] left_ft_valid is False")
+                        left_wrench = np.zeros(6, dtype=float)
+                    else:
+                        left_wrench = snapshot.left_ee_wrench
+                    if not snapshot.right_ft_valid:
+                        print("[wbc] right_ft_valid is False")
+                        right_wrench = np.zeros(6, dtype=float)
+                    else:
+                        right_wrench = snapshot.right_ee_wrench
+                left_wrench, right_wrench = self._ft_calibrator.calibrate(
+                    left_wrench,
+                    right_wrench,
+                    left_pose_vec,
+                    right_pose_vec,
+                )
+                self._admittance_controller_left.set_robot_status(left_pose_vec, left_wrench)
+                if left_quat is not None:
+                    left_pos, left_quat = self._apply_admittance(
+                        self._admittance_controller_left,
+                        left_pos,
+                        left_quat,
+                        self._admittance_wrench_left,
+                    )
+                self._admittance_controller_right.set_robot_status(right_pose_vec, right_wrench)
+                if right_quat is not None:
+                    right_pos, right_quat = self._apply_admittance(
+                        self._admittance_controller_right,
+                        right_pos,
+                        right_quat,
+                        self._admittance_wrench_right,
+                    )
+            ik_start = time.perf_counter()
             sol_qpos, sol_vel, success, _info = self.ik_solver.solve(
                 left_target_pos=left_pos,
                 left_target_quat=left_quat,
@@ -499,6 +480,8 @@ class RBY1WBC:
                 current_qpos=current_qpos,
                 dt=self.ik_rate.dt,
             )
+            ik_elapsed_ms = (time.perf_counter() - ik_start) * 1000.0
+            # print(f"[wbc] IK solve took {ik_elapsed_ms:.3f} ms")
             if not success:
                 print(f"[wbc] IK failed: {_info}")
 
@@ -530,6 +513,151 @@ class RBY1WBC:
         body_targets = positions_sdk[ordered]
         return body_targets
 
+    def _configure_admittance(self, config: Optional[Mapping[str, Any]]) -> None:
+        controller_params = config.get("controller", {})
+        self._admittance_config_left = self._build_admittance_config(controller_params)
+        self._admittance_config_right = self._build_admittance_config(controller_params)
+
+        axes_config = config.get("force_controlled_axes", {})
+        self._admittance_Tr, self._admittance_n_af = self._parse_force_controlled_axes(
+            axes_config
+        )
+
+        desired_wrench_cfg = config.get("desired_wrench", {})
+        self._admittance_wrench_left = desired_wrench_cfg["left"]
+        self._admittance_wrench_right = desired_wrench_cfg["right"]
+
+    def _build_admittance_config(
+        self, params: Mapping[str, Any]
+    ) -> AdmittanceControllerConfig:
+        cfg = AdmittanceControllerConfig()
+        cfg.dt = float(params.get("dt", cfg.dt))
+        cfg.log_to_file = bool(params.get("log_to_file", cfg.log_to_file))
+        cfg.log_file_path = str(params.get("log_file_path", cfg.log_file_path))
+        cfg.alert_overrun = bool(params.get("alert_overrun", cfg.alert_overrun))
+
+        compliance = params.get("compliance6d", {})
+        cfg.compliance6d.stiffness = np.diag(compliance["stiffness"])
+        cfg.compliance6d.damping = np.diag(compliance["damping"])
+        cfg.compliance6d.inertia = np.diag(compliance["inertia"])
+        cfg.compliance6d.stiction = compliance["stiction"]
+
+        cfg.max_spring_force_magnitude = params["max_spring_force_magnitude"]
+        cfg.max_spring_torque_magnitude = params["max_spring_torque_magnitude"]
+
+        gains = params.get("direct_force_control_gains", {})
+        cfg.direct_force_control_gains.P_trans = gains["P_trans"]
+        cfg.direct_force_control_gains.I_trans = gains["I_trans"]
+        cfg.direct_force_control_gains.D_trans = gains["D_trans"]
+        cfg.direct_force_control_gains.P_rot = gains["P_rot"]
+        cfg.direct_force_control_gains.I_rot = gains["I_rot"]
+        cfg.direct_force_control_gains.D_rot = gains["D_rot"]
+
+        cfg.direct_force_control_I_limit = params["direct_force_control_I_limit"]
+        return cfg
+
+    def _parse_force_controlled_axes(
+        self, axes_config: Mapping[str, Any]
+    ) -> Tuple[np.ndarray, int]:
+        if not axes_config:
+            return np.eye(6, dtype=float), 6
+
+        if "matrix" in axes_config:
+            matrix = np.asarray(axes_config["matrix"], dtype=float).reshape(6, 6)
+            n_af = int(axes_config.get("n_af", 6))
+            return matrix, n_af
+
+        mode = str(axes_config.get("mode", "all_force")).lower()
+        if mode == "all_force":
+            return np.eye(6, dtype=float), 6
+        if mode == "translation_force":
+            return np.eye(6, dtype=float), 3
+        if mode == "rotation_force":
+            matrix = np.array(
+                [
+                    [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+                    [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                ],
+                dtype=float,
+            )
+            return matrix, 3
+        if mode in ("rigid", "velocity"):
+            return np.eye(6, dtype=float), 0
+
+        raise ValueError(f"Unsupported force_controlled_axes mode: {mode}")
+
+    def _initialize_admittance(self, current_qpos: np.ndarray) -> None:
+        self._admittance_controller_left = AdmittanceController()
+        self._admittance_controller_right = AdmittanceController()
+        left_pose_vec, right_pose_vec = self._compute_end_effector_world_pose(current_qpos)
+        self._admittance_controller_left.init(self._admittance_config_left, left_pose_vec)
+        self._admittance_controller_right.init(self._admittance_config_right, right_pose_vec)
+        zero_wrench = np.zeros(6, dtype=float)
+        self._admittance_controller_left.set_robot_status(left_pose_vec, zero_wrench)
+        self._admittance_controller_right.set_robot_status(right_pose_vec, zero_wrench)
+        self._admittance_controller_left.set_force_controlled_axis(
+            self._admittance_Tr, self._admittance_n_af
+        )
+        self._admittance_controller_right.set_force_controlled_axis(
+            self._admittance_Tr, self._admittance_n_af
+        )
+        self._admittance_controller_left.set_robot_reference(
+            left_pose_vec, self._admittance_wrench_left
+        )
+        self._admittance_controller_right.set_robot_reference(
+            right_pose_vec, self._admittance_wrench_right
+        )
+        self._admittance_initialized = True
+
+    def _compute_end_effector_world_pose(
+        self, qpos: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        with self._model_lock:
+            self.data.qpos[:] = qpos
+            mujoco.mj_forward(self.model, self.data)
+            left_rot = self.data.site_xmat[self._left_ee_site_id]
+            right_rot = self.data.site_xmat[self._right_ee_site_id]
+            left_quat = np.zeros(4)
+            mujoco.mju_mat2Quat(left_quat, left_rot)
+            right_quat = np.zeros(4)
+            mujoco.mju_mat2Quat(right_quat, right_rot)
+            left_pose = np.concatenate(
+                (
+                    self.data.site_xpos[self._left_ee_site_id],
+                    left_quat,
+                )
+            )
+            right_pose = np.concatenate(
+                (
+                    self.data.site_xpos[self._right_ee_site_id],
+                    right_quat,
+                )
+            )
+        return left_pose.astype(float), right_pose.astype(float)
+
+    def _apply_admittance(
+        self,
+        controller: AdmittanceController,
+        target_pos: np.ndarray,
+        target_quat: Optional[np.ndarray],
+        desired_wrench: np.ndarray,
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        if target_quat is None:
+            return target_pos, target_quat
+
+        controller.set_robot_reference(np.concatenate([target_pos, target_quat]), desired_wrench)
+        status, pose_cmd = controller.step()
+        if not status:
+            return target_pos, target_quat
+        pose_cmd = np.asarray(pose_cmd, dtype=float).reshape(7)
+        new_pos = pose_cmd[:3]
+        new_quat = _normalize_quaternion(pose_cmd[3:])
+        return new_pos, new_quat
+
     def _compute_base_twist_command(self, sol_qpos: np.ndarray, sol_qvel: np.ndarray, cur_qpos: np.ndarray) -> np.ndarray:
         measured_x = float(cur_qpos[0])
         measured_y = float(cur_qpos[1])
@@ -548,13 +676,13 @@ class RBY1WBC:
             dtype=float,
         )
 
-        feedback = BASE_ERROR_GAIN * error
+        feedback = self.base_error_gain * error
 
         velocity_desired_world = np.array(
             [float(sol_qvel[0]), float(sol_qvel[1]), float(sol_qvel[5])],
             dtype=float,
         )
-        velocity_command_world = feedback + BASE_VELOCITY_GAIN * velocity_desired_world
+        velocity_command_world = feedback + self.base_velocity_gain * velocity_desired_world
 
         cy = math.cos(measured_yaw)
         sy = math.sin(measured_yaw)
@@ -674,4 +802,4 @@ class RBY1WBC:
         return (diff + math.pi) % (2 * math.pi) - math.pi
 
 
-__all__ = ["RBY1WBC", "SharedTargets"]
+__all__ = ["RBY1WBC", "EETargets"]
