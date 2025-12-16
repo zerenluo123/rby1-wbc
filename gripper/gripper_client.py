@@ -46,7 +46,7 @@ class GripperClient:
         return bool(self._request(COMMAND_STOP))
 
     def set_target(self, target_width: Sequence[float]) -> None:
-        width = self._normalize_width(target_width)
+        width = self._parse_width(target_width)
         self._request(COMMAND_SET_TARGET, width=width)
 
     def status(self) -> Dict[str, Any]:
@@ -122,7 +122,7 @@ class GripperClient:
                 raise ProtocolError("Connection closed by server")
             self._buffer.extend(chunk)
 
-    def _normalize_width(self, width: Sequence[float]) -> List[float]:
+    def _parse_width(self, width: Sequence[float]) -> List[float]:
         if len(width) != 2:
             raise ValueError("Gripper target must be a sequence of two floats")
         try:
@@ -157,19 +157,6 @@ def _parse_cli_args() -> argparse.Namespace:
     parser.add_argument("--host", required=True, help="Gripper server host/IP")
     parser.add_argument("--port", type=int, default=5678, help="Gripper server port (default: 5678)")
     parser.add_argument("--timeout", type=float, default=2.0, help="Socket timeout in seconds")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    set_target_parser = subparsers.add_parser("set-target", help="Set the gripper opening widths (meters).")
-    set_target_parser.add_argument("left", type=float, help="Left finger width in meters")
-    set_target_parser.add_argument("right", type=float, help="Right finger width in meters")
-
-    subparsers.add_parser("status", help="Request the gripper status.")
-    subparsers.add_parser("ping", help="Ping the gripper server.")
-    subparsers.add_parser("start", help="Start the gripper control loop.")
-    subparsers.add_parser("stop", help="Stop the gripper control loop.")
-    subparsers.add_parser("initialize", help="Re-run gripper initialization.")
-    subparsers.add_parser("homing", help="Run the gripper homing routine.")
-
     return parser.parse_args()
 
 
@@ -239,6 +226,11 @@ def _command_loop(client: GripperClient) -> None:
         except Exception as exc:  # noqa: BLE001
             print(f"Error while executing {command}: {exc}")
 
+
+def main() -> None:
+    args = _parse_cli_args()
+    with GripperClient(args.host, port=args.port, timeout=args.timeout) as client:
+        _command_loop(client)
 
 if __name__ == "__main__":
     main()
