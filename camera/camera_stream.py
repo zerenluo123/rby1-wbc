@@ -74,22 +74,22 @@ class AravisCameraStreamer:
             raise ValueError(f"WBC config at {config_path} must be a mapping.")
 
         def require(name: str):
-            if name not in cfg:
+            if name not in self.config:
                 raise KeyError(f"Missing required camera config key: {name}")
-            return cfg[name]
+            return self.config[name]
 
-        camera_map = cfg.get("camera_map")
+        camera_map = self.config.get("camera_map")
         if not camera_map:
             raise KeyError("Missing required camera config key: camera_map")
 
-        mock_resolution = cfg.get("mock_resolution", (720, 1280))
+        mock_resolution = self.config.get("mock_resolution", (720, 1280))
         if len(mock_resolution) != 2:
             raise ValueError("mock_resolution must be a pair of (height, width)")
         mock_resolution = (int(mock_resolution[0]), int(mock_resolution[1]))
 
         self._camera_map = dict(camera_map)
-        self._buffer_size = int(max(cfg.get("buffer_size", 16), 1))
-        self._mock_mode = bool(cfg.get("mock_mode", False))
+        self._buffer_size = int(max(self.config.get("buffer_size", 16), 1))
+        self._mock_mode = bool(self.config.get("mock_mode", False))
         self._mock_resolution = mock_resolution
 
         self._buffers: Dict[str, Deque[CameraFrame]] = {

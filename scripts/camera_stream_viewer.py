@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, Mapping, MutableMapping, Sequence
 
 import numpy as np
-
+import yaml
 
 # Ensure project root is on sys.path regardless of current working directory.
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
@@ -291,7 +291,7 @@ def main() -> None:
     init_timeout = float(config.get("init_timeout", 4.0))
 
     # Initialize Camera Streamer
-    camera_streamer = AravisCameraStreamer(config_path=args.config)
+    camera_streamer = AravisCameraStreamer()
     stop_flag: Dict[str, bool] = {"stop": False}
     _install_sigint_handler(stop_flag)
 

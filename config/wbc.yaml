@@ -20,6 +20,7 @@ use_interpolation: true
 command_timeout_sec: 0.1
 
 gripper:
+  mode: remote
   auto_initialize: false   # Call initialize() when the controller boots (set false for remote server that's already running)
   auto_homing: false       # Run homing() automatically
   auto_start: false        # Start the gripper background loop
