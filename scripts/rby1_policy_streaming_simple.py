@@ -182,7 +182,7 @@ def main() -> None:
 
     control_dt = max(args.control_dt, 1e-2)
     robot = RBY1PolicyRobot(
-        config_path=PROJECT_ROOT + "/config/wbc_policy.yaml",
+        config_path=PROJECT_ROOT + "/config/wbc.yaml",
         use_sim=args.sim_only,
         sim_model_path=args.sim_model,
         sim_viewer=args.sim_viewer,
