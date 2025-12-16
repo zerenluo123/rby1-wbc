@@ -1,19 +1,49 @@
-# Gripper Setup for RB-Y1
+# RB-Y1 Gripper Networking
 
-The RB-Y1 robot supports gripper control through locally emulated devices. To use this feature, your local machine must be connected to the robot's PC via an Ethernet cable.
+The RB-Y1 gripper hardware runs on the robot PC. Remote
+workstations interact with it over TCP using the Python client/server utilities
+in this package.
 
-## Setup Instructions
+## Run the server on the robot PC
 
-1. **Power on the robot.**
-2. **SSH into the robot's PC:**
-   ```bash
-   ssh nvidia@192.168.30.2
-   ```
-3. **Start the gripper sharing service on the robot's PC:**
-   ```bash
-    sudo ~/gripper_share.sh start
-   ```
-4. **On your local PC, start the gripper client:**
-    ```bash
-    sudo ~/gripper_client.sh start
-   ```
+```bash
+cd /path/to/rby1
+python -m gripper.gripper_server --host 0.0.0.0 --port 5678
+```
+
+`gripper.gripper_server` initializes the hardware `Gripper`, optionally homes
+it, and exposes a JSON-over-TCP API. Use the `--skip-*` flags if you need to
+skip initialization steps.
+
+## Control the gripper from a remote workstation
+
+The CLI now runs an interactive shell so you can send multiple commands in one
+session:
+
+```bash
+cd /path/to/rby1
+python -m gripper.gripper_client --host <robot-pc-ip> --port 5678
+```
+
+Once connected you'll see a `gripper>` prompt. Type commands such as:
+
+```
+gripper> set-target 0.05 0.05
+gripper> status
+gripper> stop
+```
+
+Available commands: `set-target`, `status`, `ping`, `start`, `stop`,
+`initialize`, `homing`, plus `help` and `quit`.
+
+## Programmatic control
+
+```python
+from gripper.gripper_client import GripperClient
+
+client = GripperClient(host="192.168.30.2", port=5678)
+client.set_target([0.07, 0.07])
+```
+
+`GripperClient` mirrors the `Gripper` API, so existing control code can talk to
+the hardware even when it runs on another machine.

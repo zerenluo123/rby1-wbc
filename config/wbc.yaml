@@ -18,6 +18,15 @@ trajectory_frequency_hz: 10.0
 ik_frequency_hz: 100.0
 use_interpolation: true
 command_timeout_sec: 0.1
+
+gripper:
+  auto_initialize: false   # Call initialize() when the controller boots (set false for remote server that's already running)
+  auto_homing: false       # Run homing() automatically
+  auto_start: false        # Start the gripper background loop
+  verbose_init: false
+  host: "192.168.30.2"  # Required when mode == "remote"
+  port: 5678
+  timeout: 2.0
 low_pass_freq_hz: 1
 
 # Base control gains
