@@ -8,6 +8,8 @@ head cameras, decode the QR payload, and compute the latency as
 written to CSV for later analysis.
 """
 
+from __future__ import annotations
+
 '''
 python - <<'PY'
 import time, cv2, numpy as np, qrcode
@@ -21,8 +23,6 @@ while True:
 PY
 
 '''
-
-from __future__ import annotations
 
 import argparse
 import csv
@@ -39,31 +39,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from camera.camera_stream import AravisCameraStreamer
-
-DEFAULT_CAMERA_SERIAL_MAP: Mapping[str, str] = {
-    # "camera_head_main_rgb": "FLIR-Blackfly S BFS-PGE-50S5C-25260985",
-    # "camera_head_main_right_rgb": "FLIR-Blackfly S BFS-PGE-50S5C-25272263",
-    # "camera_head_ultrawide_rgb": "FLIR-Blackfly S BFS-PGE-50S5C-25260989",
-    # "camera_left_main_rgb": "FLIR-Blackfly S BFS-PGE-23S3C-24260091",
-    "camera_right_main_rgb": "FLIR-Blackfly S BFS-PGE-23S3C-24260092",
-}
-
-
-def _parse_camera_map(entries: Sequence[str] | None) -> Dict[str, str]:
-    mapping: Dict[str, str] = {}
-    if not entries:
-        return mapping
-    for entry in entries:
-        if "=" in entry:
-            key, serial = entry.split("=", 1)
-        else:
-            key, serial = entry, entry
-        key = key.strip()
-        serial = serial.strip()
-        if not key or not serial:
-            raise ValueError(f"Invalid camera specification '{entry}'")
-        mapping[key] = serial
-    return mapping
 
 
 def _decode_qr_timestamp(image: np.ndarray, detector: cv2.QRCodeDetector) -> float | None:
@@ -98,27 +73,23 @@ def _install_sigint_handler(stop_flag: MutableMapping[str, bool]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Measure camera latency via QR-coded timestamps")
-    parser.add_argument("--camera", action="append", help="Camera mapping KEY=SERIAL; repeatable")
     parser.add_argument(
         "--camera-key",
         default=None,
         help="Observation key to decode (defaults to the first configured camera)",
     )
-    parser.add_argument("--buffer-size", type=int, default=8, help="Frames to keep per camera")
     parser.add_argument("--samples", type=int, default=200, help="Number of decoded frames to collect")
     parser.add_argument("--display-latency", type=float, default=0.017, help="Known display latency in seconds")
     parser.add_argument("--output-csv", type=str, default=None, help="Optional CSV to write decoded samples")
     args = parser.parse_args()
 
-    requested = _parse_camera_map(args.camera)
-    camera_map = requested or dict(DEFAULT_CAMERA_SERIAL_MAP)
-
-    target_key = args.camera_key or next(iter(camera_map))
-    if target_key not in camera_map:
-        raise SystemExit(f"Camera key '{target_key}' is not in configured mapping: {list(camera_map)}")
-
     detector = cv2.QRCodeDetector()
-    streamer = AravisCameraStreamer(camera_map, buffer_size=args.buffer_size)
+    streamer = AravisCameraStreamer()
+
+    target_key = args.camera_key or next(iter(self.streamer._camera_map))
+    if target_key not in streamer._camera_map:
+        raise SystemExit(f"Camera key '{target_key}' is not in configured mapping: {list(streamer._camera_map)}")
+
     streamer.start()
     streamer.wait_until_ready(min_frames=1, timeout=5.0)
 

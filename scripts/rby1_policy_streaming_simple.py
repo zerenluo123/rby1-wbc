@@ -20,11 +20,6 @@ PROJECT_ROOT = str(PROJECT_ROOT)
 from camera.camera_stream import AravisCameraStreamer
 from control.rby1_realtime import RBY1PolicyRobot
 
-CAMERA_SERIAL_TO_KEY = {
-    "camera_left_main_rgb": "FLIR-Blackfly S BFS-PGE-23S3C-24260091",
-    "camera_right_main_rgb": "FLIR-Blackfly S BFS-PGE-23S3C-24260092",
-}
-
 OBS_TF_KEYS = {
     "left": "gripper_left_tf",
     "right": "gripper_right_tf",
@@ -199,11 +194,7 @@ def main() -> None:
             raise TimeoutError("Timed out waiting for initial robot observations")
 
         if not args.state_only and not args.sim_only:
-            camera_streamer = AravisCameraStreamer(
-                CAMERA_SERIAL_TO_KEY,
-                buffer_size=max(args.camera_horizon * args.camera_stride, 4),
-                mock_mode=args.mock_cameras,
-            )
+            camera_streamer = AravisCameraStreamer()
             camera_streamer.start()
             try:
                 camera_streamer.wait_until_ready(

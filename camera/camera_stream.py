@@ -19,9 +19,11 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Dict, List, Mapping, Optional
+from pathlib import Path
+from typing import Any, Deque, Dict, List, Mapping, Optional
 
 import numpy as np
+import yaml
 
 try:  # pragma: no cover - optional dependency
     import gi
@@ -31,6 +33,7 @@ try:  # pragma: no cover - optional dependency
 except Exception:  # pragma: no cover - used in headless testing
     Aravis = None  # type: ignore
 
+PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 
 @dataclass(frozen=True)
 class CameraFrame:
@@ -59,19 +62,34 @@ class AravisCameraStreamer:
         Resolution of the synthetic frames used in ``mock_mode``.
     """
 
-    def __init__(
-        self,
-        camera_map: Mapping[str, str],
-        buffer_size: int = 16,
-        *,
-        mock_mode: bool = False,
-        mock_resolution: tuple[int, int] = (720, 1280),
-    ) -> None:
+    def __init__(self, config_path: str = PROJECT_ROOT + "/config/camera.yaml") -> None:
+        # Load Camera Config
+        try:
+            config_path = Path(config_path)
+            with config_path.open("r", encoding="utf-8") as f:
+                self.config = yaml.safe_load(f) or {}
+        except Exception as e:
+            raise Exception(f"Exception while loading config file: {e}")
+        if not isinstance(self.config, dict):
+            raise ValueError(f"WBC config at {config_path} must be a mapping.")
+
+        def require(name: str):
+            if name not in cfg:
+                raise KeyError(f"Missing required camera config key: {name}")
+            return cfg[name]
+
+        camera_map = cfg.get("camera_map")
         if not camera_map:
-            raise ValueError("camera_map must contain at least one camera")
+            raise KeyError("Missing required camera config key: camera_map")
+
+        mock_resolution = cfg.get("mock_resolution", (720, 1280))
+        if len(mock_resolution) != 2:
+            raise ValueError("mock_resolution must be a pair of (height, width)")
+        mock_resolution = (int(mock_resolution[0]), int(mock_resolution[1]))
+
         self._camera_map = dict(camera_map)
-        self._buffer_size = int(max(buffer_size, 1))
-        self._mock_mode = bool(mock_mode)
+        self._buffer_size = int(max(cfg.get("buffer_size", 16), 1))
+        self._mock_mode = bool(cfg.get("mock_mode", False))
         self._mock_resolution = mock_resolution
 
         self._buffers: Dict[str, Deque[CameraFrame]] = {

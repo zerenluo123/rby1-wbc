@@ -24,14 +24,6 @@ from camera.camera_stream import AravisCameraStreamer
 from control.rby1_realtime import RBY1PolicyRobot, ScheduledAction
 
 
-CAMERA_SERIAL_TO_KEY = {
-    # "camera_head_main_rgb": "FLIR-Blackfly S BFS-PGE-50S5C-25260985",
-    # "camera_head_main_right_rgb": "FLIR-Blackfly S BFS-PGE-50S5C-25272263",
-    # "camera_head_ultrawide_rgb": "FLIR-Blackfly S BFS-PGE-50S5C-25260989",
-    "camera_left_main_rgb": "FLIR-Blackfly S BFS-PGE-23S3C-24260091",
-    "camera_right_main_rgb": "FLIR-Blackfly S BFS-PGE-23S3C-24260092",
-}
-
 DEFAULT_CAMERA_LATENCIES = {
     # Wrist cameras (left/right)
     "camera_left_main_rgb": 0.12,
@@ -717,11 +709,7 @@ def main() -> None:
             tracking_state_thread.start()
 
         if not args.state_only and not args.sim_only:
-            camera_streamer = AravisCameraStreamer(
-                CAMERA_SERIAL_TO_KEY,
-                buffer_size=max(args.camera_horizon * args.camera_stride, 4),
-                mock_mode=args.mock_cameras,
-            )
+            camera_streamer = AravisCameraStreamer()
             camera_streamer.start()
             try:
                 camera_streamer.wait_until_ready(
