@@ -10,3 +10,6 @@ build/
 *.so
 *.pkl
 *.jsonl
+*.csv
+*.png
+*.txt
