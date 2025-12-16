@@ -18,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 PROJECT_ROOT = str(PROJECT_ROOT)
 
 from camera.camera_stream import AravisCameraStreamer
-from control.rby1_realtime import RBY1PolicyRobot
+from control.rby1_policy import RBY1PolicyRobot
 
 OBS_TF_KEYS = {
     "left": "gripper_left_tf",

@@ -21,7 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 PROJECT_ROOT = str(PROJECT_ROOT)
 
 from camera.camera_stream import AravisCameraStreamer
-from control.rby1_realtime import RBY1PolicyRobot, ScheduledAction
+from control.rby1_policy import RBY1PolicyRobot, ScheduledAction
 
 
 DEFAULT_CAMERA_LATENCIES = {
