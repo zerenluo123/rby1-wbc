@@ -25,7 +25,7 @@ class _ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
 
 
-class GripperCommandServer(_ThreadedTCPServer):
+class GripperServer(_ThreadedTCPServer):
     """
     TCP server that exposes the Gripper API to remote machines. Each request is a
     newline-delimited JSON object with a `command` field.
@@ -35,13 +35,12 @@ class GripperCommandServer(_ThreadedTCPServer):
         self,
         host: str,
         port: int,
-        gripper: Optional[Gripper] = None,
         auto_initialize: bool = True,
         auto_homing: bool = True,
         auto_start: bool = True,
         verbose_init: bool = False,
     ):
-        self.gripper = gripper or Gripper()
+        self.gripper = Gripper()
         self.lock = threading.Lock()
         super().__init__((host, port), GripperRequestHandler)
 
@@ -190,7 +189,7 @@ def main() -> None:
         format="[%(asctime)s] %(levelname)s: %(message)s",
     )
 
-    server = GripperCommandServer(
+    server = GripperServer(
         host=args.host,
         port=args.port,
         auto_initialize=not args.skip_init,

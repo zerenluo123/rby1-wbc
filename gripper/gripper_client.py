@@ -18,7 +18,7 @@ from gripper.network_protocol import (
 )
 
 
-class RemoteGripper:
+class GripperClient:
     """
     Lightweight proxy that mirrors the Gripper API but forwards all commands to
     a TCP server running on the machine that hosts the real gripper hardware.
@@ -175,7 +175,7 @@ def _parse_cli_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_cli_args()
-    with RemoteGripper(args.host, port=args.port, timeout=args.timeout) as client:
+    with GripperClient(args.host, port=args.port, timeout=args.timeout) as client:
         if args.command == "set-target":
             client.set_target([args.left, args.right])
             print(f"Target set to ({args.left:.3f}, {args.right:.3f}) m")
