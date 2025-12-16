@@ -12,12 +12,9 @@ class Gripper:
     """
 
     def __init__(self):
-        self.bus = rby.DynamixelBus("/dev/ttyVDX0")
+        self.bus = rby.DynamixelBus(rby.upc.GripperDeviceName)
         self.bus.open_port()
         self.bus.set_baud_rate(2_000_000)
-        # self.bus = rby.DynamixelBus(rby.upc.GripperDeviceName)
-        # self.bus.open_port()
-        # self.bus.set_baud_rate(2_000_000)
         self.bus.set_torque_constant([1, 1])
         self.min_q = np.array([np.inf, np.inf])
         self.max_q = np.array([-np.inf, -np.inf])
