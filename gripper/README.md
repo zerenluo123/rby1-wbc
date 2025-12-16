@@ -17,15 +17,24 @@ skip initialization steps.
 
 ## Control the gripper from a remote workstation
 
-The CLI wraps `GripperClient` so you can issue ad-hoc commands:
+The CLI now runs an interactive shell so you can send multiple commands in one
+session:
 
 ```bash
 cd /path/to/rby1
-python -m gripper.gripper_client --host <robot-pc-ip> --port 5678 set-target 0.05 0.05
+python -m gripper.gripper_client --host <robot-pc-ip> --port 5678
 ```
 
-Other commands include `status`, `ping`, `start`, `stop`, `initialize`, and
-`homing`.
+Once connected you'll see a `gripper>` prompt. Type commands such as:
+
+```
+gripper> set-target 0.05 0.05
+gripper> status
+gripper> stop
+```
+
+Available commands: `set-target`, `status`, `ping`, `start`, `stop`,
+`initialize`, `homing`, plus `help` and `quit`.
 
 ## Programmatic control
 

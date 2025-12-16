@@ -173,29 +173,71 @@ def _parse_cli_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = _parse_cli_args()
-    with GripperClient(args.host, port=args.port, timeout=args.timeout) as client:
-        if args.command == "set-target":
-            client.set_target([args.left, args.right])
-            print(f"Target set to ({args.left:.3f}, {args.right:.3f}) m")
-        elif args.command == "status":
-            status = client.status()
-            print(json.dumps(status, indent=2))
-        elif args.command == "ping":
-            print(client.ping())
-        elif args.command == "start":
-            client.start()
-            print("Gripper loop started")
-        elif args.command == "stop":
-            client.stop()
-            print("Gripper loop stopped")
-        elif args.command == "initialize":
-            rv = client.initialize(verbose=True)
-            print("Initialize returned", rv)
-        elif args.command == "homing":
-            rv = client.homing()
-            print("Homing returned", rv)
+def _print_help() -> None:
+    print(
+        "Available commands:\n"
+        "  set-target <left> <right>  Set finger widths in meters\n"
+        "  status                     Query the gripper status\n"
+        "  ping                       Ping the gripper server\n"
+        "  start                      Start the gripper control loop\n"
+        "  stop                       Stop the gripper control loop\n"
+        "  initialize                 Re-run gripper initialization\n"
+        "  homing                     Run the gripper homing routine\n"
+        "  help                       Show this message\n"
+        "  quit/exit                  Close the client\n"
+    )
+
+
+def _command_loop(client: GripperClient) -> None:
+    _print_help()
+    while True:
+        try:
+            raw = input("gripper> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not raw:
+            continue
+        lowered = raw.lower()
+        if lowered in {"quit", "exit"}:
+            break
+        if lowered in {"help", "?"}:
+            _print_help()
+            continue
+
+        parts = raw.split()
+        command = parts[0].lower()
+        args = parts[1:]
+
+        try:
+            if command == "set-target":
+                if len(args) != 2:
+                    print("Usage: set-target <left> <right>")
+                    continue
+                left, right = float(args[0]), float(args[1])
+                client.set_target([left, right])
+                print(f"Target set to ({left:.3f}, {right:.3f}) m")
+            elif command == "status":
+                status = client.status()
+                print(json.dumps(status, indent=2))
+            elif command == "ping":
+                print(client.ping())
+            elif command == "start":
+                client.start()
+                print("Gripper loop started")
+            elif command == "stop":
+                client.stop()
+                print("Gripper loop stopped")
+            elif command == "initialize":
+                rv = client.initialize(verbose=True)
+                print("Initialize returned", rv)
+            elif command == "homing":
+                rv = client.homing()
+                print("Homing returned", rv)
+            else:
+                print(f"Unknown command: {command}. Type 'help' to list commands.")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Error while executing {command}: {exc}")
 
 
 if __name__ == "__main__":
