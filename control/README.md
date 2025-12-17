@@ -5,11 +5,50 @@ to command the RBY1 robot at ~500 Hz. The controller is implemented entirely i
 C++, exposes a small C++ executable (`rby1_realtime_control_main`), and ships a
 `pybind11` module (`rby1_controller`) for direct consumption from Python.
 
+## Install rby1-sdk
+https://github.com/RainbowRobotics/rby1-sdk
+
+refer to RBY1_SDK_BUILD.md
+
+## Install force_control
+https://github.com/yifan-hou/force_control/tree/460bc3bdc6036e7c531cbe7751692d05bb36052d
+
+This build requires https://github.com/yifan-hou/cpplibrary, which in turn depends on:
+- Eigen
+- yaml-cpp
+
+Install dependencies:
+```bash
+sudo apt update
+sudo apt install libeigen3-dev libyaml-cpp-dev
+```
+
+Build and install `cpplibrary`:
+```bash
+git clone https://github.com/yifan-hou/cpplibrary.git
+cd cpplibrary
+mkdir -p build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake --build . -j
+sudo cmake --install .
+```
+
+Build and install `force_control` (commit 460bc3b):
+```bash
+git clone https://github.com/yifan-hou/force_control.git
+cd force_control
+git checkout 460bc3bdc6036e7c531cbe7751692d05bb36052d
+mkdir -p build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake --build . -j
+sudo cmake --install .
+```
+
 ## Building
 ```bash
 # Need to install rby1-sdk first
 mkdir -p build && cd build
-# You may need to adjust the directory with your address (/usr/local/)
+# You may need to adjust the directory with your address (/usr/local/) - if rby1-sdk is installed using sudo make install
 cmake .. \
   -DCMAKE_BUILD_TYPE=Debug \
   -Dpybind11_DIR="$(python -m pybind11 --cmakedir)" \

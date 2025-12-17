@@ -9,3 +9,6 @@ pyyaml
 scipy
 flask
 flask-socketio
+numpy
+opencv-python
+matplotlib
