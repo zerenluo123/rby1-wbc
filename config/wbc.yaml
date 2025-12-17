@@ -34,6 +34,18 @@ low_pass_freq_hz: 1
 base_error_gain: [0, 0, 0]  # TRI's IK runs at 500hz and ours at 100hz, so scale the gains by 5x
 base_velocity_gain: [0.1, 0.1, 0.1] # Might need to tune this more
 
+# Base reset parameters
+base_reset:
+  pos_tolerance_m: 0.01
+  yaw_tolerance_deg: 0.1
+  max_linear_speed: 0.2
+  max_yaw_speed: 0.8
+  min_linear_speed: 0.01
+  min_yaw_speed: 0.01
+
+# Initialization step size for interpolating joint targets
+init_position_max_step_delta: 0.01
+
 # Incremental safety limits (commands farther than these from current pose are rejected)
 incremental_safety:
   enabled: true
