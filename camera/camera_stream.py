@@ -92,6 +92,16 @@ class AravisCameraStreamer:
         self._mock_mode = bool(self.config.get("mock_mode", False))
         self._mock_resolution = mock_resolution
 
+        self._frame_rate = float(self.config.get("frame_rate", 30.0))
+        binning = self.config.get("binning", (4, 4))
+        try:
+            if binning is None or len(binning) != 2:
+                raise ValueError
+            self._binning = (int(binning[0]), int(binning[1]))
+        except Exception:
+            raise ValueError("binning must be a pair of integers") from None
+        self._pixel_format_config = self.config.get("pixel_format", "PIXEL_FORMAT_BGR_8_PACKED")
+
         self._buffers: Dict[str, Deque[CameraFrame]] = {
             key: deque(maxlen=self._buffer_size) for key in self._camera_map
         }
@@ -128,10 +138,14 @@ class AravisCameraStreamer:
             return
 
         Aravis.update_device_list()
+        pixel_format = self._resolve_pixel_format(self._pixel_format_config)
         for obs_key, serial in self._camera_map.items():
             camera = Aravis.Camera.new(serial)
             if camera is None:  # pragma: no cover - depends on hardware
                 raise RuntimeError(f"Failed to create Aravis camera for serial {serial}")
+            camera.set_frame_rate(self._frame_rate)
+            camera.set_binning(*self._binning)
+            camera.set_pixel_format(pixel_format)
             stream = camera.create_stream(None, None)
             payload = camera.get_payload()
             for _ in range(4):
@@ -235,6 +249,18 @@ class AravisCameraStreamer:
                     self._buffers[obs_key].append(frame)
             finally:
                 stream.push_buffer(buffer)
+
+    @staticmethod
+    def _resolve_pixel_format(pixel_format_config: Any) -> Any:
+        if isinstance(pixel_format_config, int):
+            return pixel_format_config
+
+        name = str(pixel_format_config).strip()
+        attr_name = name if name.startswith("PIXEL_FORMAT_") else f"PIXEL_FORMAT_{name}"
+        attr_name = attr_name.upper()
+        if not hasattr(Aravis, attr_name):
+            raise KeyError(f"Unknown Aravis pixel format constant '{name}'")
+        return getattr(Aravis, attr_name)
 
     @staticmethod
     def _decode_buffer(data: memoryview | bytes, width: int, height: int, pixel_format: str) -> np.ndarray:
