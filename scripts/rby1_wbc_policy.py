@@ -26,12 +26,12 @@ from control.rby1_policy import RBY1PolicyRobot, ScheduledAction
 
 DEFAULT_CAMERA_LATENCIES = {
     # Wrist cameras (left/right)
-    "camera_left_main_rgb": 0.12,
-    "camera_right_main_rgb": 0.12,
+    "camera_left_main_rgb": 0.06,
+    "camera_right_main_rgb": 0.06,
     # Head rig (main, right, ultrawide)
-    "camera_head_main_rgb": 0.27,
-    "camera_head_main_right_rgb": 0.27,
-    "camera_head_ultrawide_rgb": 0.27,
+    "camera_head_main_rgb": 0.1,
+    "camera_head_main_right_rgb": 0.1,
+    "camera_head_ultrawide_rgb": 0.1,
 }
 
 
@@ -615,7 +615,7 @@ def main() -> None:
     parser.add_argument(
         "--gripper-execution-latency",
         type=float,
-        default=0.1001,
+        default=0.05,
         help="Measured execution latency (seconds) for the gripper hardware.",
     )
     parser.add_argument(
@@ -629,7 +629,6 @@ def main() -> None:
         action="append",
         help=(
             "Per-camera latency override KEY=SECONDS; repeatable. "
-            "Defaults: wrists 0.12s (camera_left/right_main_rgb), head 0.27s."
         ),
     )
     parser.add_argument(
@@ -731,7 +730,7 @@ def main() -> None:
         )
         _ = policy_client.request_observation_keys()
         print(f"[policy] Required observation keys: {policy_client.observation_keys}")
-        
+
         def inference_worker() -> None:
             while not stop_event.is_set():
                 start = time.monotonic()
