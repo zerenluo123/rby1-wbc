@@ -170,20 +170,23 @@ class PolicyClient:
         self._socket.connect(f"tcp://{ip}:{port}")
         self._socket.setsockopt(zmq.RCVTIMEO, int(max(timeout, 0.1) * 1000))
         self._socket.setsockopt(zmq.SNDTIMEO, int(max(timeout, 0.1) * 1000))
+        self.observation_keys: Dict[str, object] = {}
 
     def close(self) -> None:
         self._socket.close(0)
 
-    def request_action_indexing(self) -> Dict[str, Tuple[int, int]]:
+    def request_observation_keys(self) -> Dict[str, object]:
         while True:
             try:
-                self._socket.send_string("get_action_indexing")
+                self._socket.send_string("get_obs_keys")
                 reply = self._socket.recv_pyobj()
+                # print(f"[policy] Received observation keys: {reply}")
             except zmq.Again:
                 continue
             if isinstance(reply, dict):
+                self.observation_keys = reply
                 return reply
-            time.sleep(0.5)
+            time.sleep(1.0)
 
     def infer(self, obs: Dict[str, np.ndarray]) -> Optional[Dict[str, np.ndarray]]:
         try:
@@ -726,8 +729,9 @@ def main() -> None:
             port=args.policy_port,
             timeout=args.policy_timeout,
         )
-        _ = policy_client.request_action_indexing()
-
+        _ = policy_client.request_observation_keys()
+        print(f"[policy] Required observation keys: {policy_client.observation_keys}")
+        
         def inference_worker() -> None:
             while not stop_event.is_set():
                 start = time.monotonic()
