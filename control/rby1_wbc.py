@@ -96,6 +96,7 @@ class RBY1WBC:
         self.init_position_max_step_delta = float(self.config.get("init_position_max_step_delta", 0.01))
 
         base_reset_cfg = self.config.get("base_reset", {})
+        self.base_reset_enabled = bool(base_reset_cfg.get("enabled", True))
         self.base_reset_pos_tolerance = float(base_reset_cfg.get("pos_tolerance_m", 0.01))
         self.base_reset_yaw_tolerance_deg = float(base_reset_cfg.get("yaw_tolerance_deg", 0.1))
         self.base_reset_max_linear_speed = float(base_reset_cfg.get("max_linear_speed", 0.2))
@@ -187,7 +188,8 @@ class RBY1WBC:
         self._ik_thread.start()
         self._threads_started = True
         self.wait_for_first_state()
-        self._reset_base_pose()
+        if self.base_reset_enabled:
+            self._reset_base_pose()
         self._set_init_position()
 
     def stop(self, join_timeout: float = 2.0) -> None:
