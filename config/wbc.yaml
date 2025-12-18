@@ -18,7 +18,9 @@ trajectory_frequency_hz: 10.0
 ik_frequency_hz: 100.0
 use_interpolation: true
 command_timeout_sec: 0.1
+low_pass_freq_hz: 1
 
+# Gripper controller parameters
 gripper:
   mode: remote
   auto_initialize: false   # Call initialize() when the controller boots (set false for remote server that's already running)
@@ -28,7 +30,6 @@ gripper:
   host: "192.168.30.2"  # Required when mode == "remote"
   port: 5678
   timeout: 2.0
-low_pass_freq_hz: 1
 
 # Base control gains
 base_error_gain: [0, 0, 0]  # TRI's IK runs at 500hz and ours at 100hz, so scale the gains by 5x
