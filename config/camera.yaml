@@ -5,6 +5,9 @@ camera_map:
   camera_left_main_rgb: "FLIR-Blackfly S BFS-PGE-23S3C-24260091"
   camera_right_main_rgb: "FLIR-Blackfly S BFS-PGE-23S3C-24260092"
 
+frame_rate: 30.0
+binning: [4, 4]
+pixel_format: PIXEL_FORMAT_BGR_8_PACKED
 buffer_size: 16
 mock_mode: false
 mock_resolution: [720, 1280]

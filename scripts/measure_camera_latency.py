@@ -8,7 +8,7 @@ head cameras, decode the QR payload, and compute the latency as
 written to CSV for later analysis.
 """
 
-from __future__ import annotations
+# from __future__ import annotations
 
 '''
 python - <<'PY'
