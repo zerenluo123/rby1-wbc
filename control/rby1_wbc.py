@@ -93,6 +93,16 @@ class RBY1WBC:
         self.base_error_gain = np.asarray(require("base_error_gain"), dtype=float)
         self.base_velocity_gain = np.asarray(require("base_velocity_gain"), dtype=float)
         self.low_pass_freq_hz = require("low_pass_freq_hz")
+        self.init_position_max_step_delta = float(self.config.get("init_position_max_step_delta", 0.01))
+
+        base_reset_cfg = self.config.get("base_reset", {})
+        self.base_reset_enabled = bool(base_reset_cfg.get("enabled", True))
+        self.base_reset_pos_tolerance = float(base_reset_cfg.get("pos_tolerance_m", 0.01))
+        self.base_reset_yaw_tolerance_deg = float(base_reset_cfg.get("yaw_tolerance_deg", 0.1))
+        self.base_reset_max_linear_speed = float(base_reset_cfg.get("max_linear_speed", 0.2))
+        self.base_reset_max_yaw_speed = float(base_reset_cfg.get("max_yaw_speed", 0.8))
+        self.base_reset_min_linear_speed = float(base_reset_cfg.get("min_linear_speed", 0.01))
+        self.base_reset_min_yaw_speed = float(base_reset_cfg.get("min_yaw_speed", 0.01))
 
         incremental_cfg = self.config.get("incremental_safety", {})
         self.incremental_safety_enabled = bool(incremental_cfg.get("enabled", False))
@@ -177,6 +187,9 @@ class RBY1WBC:
         self._state_thread.start()
         self._ik_thread.start()
         self._threads_started = True
+        self.wait_for_first_state()
+        if self.base_reset_enabled:
+            self._reset_base_pose()
         self._set_init_position()
 
     def stop(self, join_timeout: float = 2.0) -> None:
@@ -413,7 +426,7 @@ class RBY1WBC:
                 sol_qpos[int(idx)] = float(value)
 
         target_body = self._compute_body_commands(sol_qpos)
-        snapshot = self.wait_for_first_state()
+        snapshot = self.robot_state.load()
         with self._model_lock:
             start_qpos = self._snapshot_to_qpos(snapshot)
         if self.admittance_enabled:
@@ -425,8 +438,8 @@ class RBY1WBC:
         if max_delta < 1e-6:
             self.controller.set_body_position_targets(target_body.tolist())
         else:
-            INIT_POSITION_MAX_STEP_DELTA = 0.01
-            steps = max(10, int(np.ceil(max_delta / INIT_POSITION_MAX_STEP_DELTA)))
+            max_step = max(float(self.init_position_max_step_delta), 1e-6)
+            steps = max(10, int(np.ceil(max_delta / max_step)))
             for step in range(1, steps + 1):
                 alpha = step / steps
                 cmd = start_body + alpha * delta
@@ -438,6 +451,76 @@ class RBY1WBC:
             self.gripper.set_target(gripper_targets.tolist())
         self.robot_state.store_gripper_widths(float(gripper_targets[0]),  float(gripper_targets[1]))
         print("Initial positions set.")
+
+    def _reset_base_pose(self) -> None:
+        """Drive the base back to the odometry origin using twist commands."""
+
+        if self._base_free_adr is None:
+            return
+
+        pos_tolerance = self.base_reset_pos_tolerance
+        yaw_tolerance = math.radians(self.base_reset_yaw_tolerance_deg)
+        max_linear_speed = self.base_reset_max_linear_speed
+        max_yaw_speed = self.base_reset_max_yaw_speed
+        min_linear_speed = self.base_reset_min_linear_speed
+        min_yaw_speed = self.base_reset_min_yaw_speed
+        rate = RateLimiter(frequency=self.trajectory_frequency_hz, warn=False)
+
+        target_xy = self._base_origin_pos[:2]
+        target_yaw = getattr(self, "_base_origin_yaw", 0.0)
+        zero_twist = np.zeros(3, dtype=float)
+
+        while not self._stop.is_set():
+            snapshot = self.robot_state.load()
+            cur_qpos = self.snapshot_to_qpos(snapshot)
+            if cur_qpos is None:
+                rate.sleep()
+                continue
+
+            if snapshot is not None:
+                T = np.array(snapshot.odom_SE2, dtype=float)
+                x, y = float(T[0, 2]), float(T[1, 2])
+                yaw = math.atan2(float(T[1, 0]), float(T[0, 0]))
+                print(f"[wbc] odom x={x:.4f}, y={y:.4f}, yaw={yaw:.4f} rad")
+
+            measured_xy = cur_qpos[self._base_free_adr : self._base_free_adr + 2]
+            measured_yaw = self._yaw_from_quat(
+                cur_qpos[self._base_free_adr + 3 : self._base_free_adr + 7]
+            )
+
+            error_xy = target_xy - measured_xy
+            yaw_error = self._angle_difference(target_yaw, measured_yaw)
+
+            if np.linalg.norm(error_xy) <= pos_tolerance and abs(yaw_error) <= yaw_tolerance:
+                break
+
+            velocity_world = np.array(
+                [
+                    float(error_xy[0]),
+                    float(error_xy[1]),
+                    float(yaw_error),
+                ],
+                dtype=float,
+            )
+            # velocity_world *= self.base_velocity_gain
+            lin_norm = float(np.linalg.norm(velocity_world[:2]))
+            if 0.0 < lin_norm < min_linear_speed:
+                velocity_world[:2] *= min_linear_speed / lin_norm
+            yaw_mag = abs(float(velocity_world[2]))
+            if 0.0 < yaw_mag < min_yaw_speed:
+                velocity_world[2] = math.copysign(min_yaw_speed, velocity_world[2])
+            velocity_world[:2] = np.clip(velocity_world[:2], -max_linear_speed, max_linear_speed)
+            velocity_world[2] = float(np.clip(velocity_world[2], -max_yaw_speed, max_yaw_speed))
+
+            cy = math.cos(measured_yaw)
+            sy = math.sin(measured_yaw)
+            vx_body = cy * velocity_world[0] + sy * velocity_world[1]
+            vy_body = -sy * velocity_world[0] + cy * velocity_world[1]
+            twist_body = np.array([vx_body, vy_body, velocity_world[2]], dtype=float)
+            self.controller.set_base_twist_command(twist_body)
+            rate.sleep()
+
+        self.controller.set_base_twist_command(zero_twist.tolist())
 
     def _state_poll_loop(self) -> None:
         while not self._stop.is_set():
@@ -813,6 +896,8 @@ class RBY1WBC:
         self._base_origin_pos = self.data.qpos[
             self._base_free_adr : self._base_free_adr + 3
         ].copy()
+        base_quat = self.data.qpos[self._base_free_adr + 3 : self._base_free_adr + 7]
+        self._base_origin_yaw = self._yaw_from_quat(base_quat)
 
     @staticmethod
     def _quat_from_yaw(yaw: float) -> np.ndarray:

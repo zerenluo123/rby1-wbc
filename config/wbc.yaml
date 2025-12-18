@@ -18,7 +18,9 @@ trajectory_frequency_hz: 10.0
 ik_frequency_hz: 100.0
 use_interpolation: true
 command_timeout_sec: 0.1
+low_pass_freq_hz: 1
 
+# Gripper controller parameters
 gripper:
   mode: remote
   auto_initialize: false   # Call initialize() when the controller boots (set false for remote server that's already running)
@@ -28,11 +30,23 @@ gripper:
   host: "192.168.30.2"  # Required when mode == "remote"
   port: 5678
   timeout: 2.0
-low_pass_freq_hz: 1
 
 # Base control gains
 base_error_gain: [0, 0, 0]  # TRI's IK runs at 500hz and ours at 100hz, so scale the gains by 5x
 base_velocity_gain: [0.1, 0.1, 0.1] # Might need to tune this more
+
+# Base reset parameters
+base_reset:
+  enabled: true
+  pos_tolerance_m: 0.01
+  yaw_tolerance_deg: 0.1
+  max_linear_speed: 0.05
+  max_yaw_speed: 0.1
+  min_linear_speed: 0.01
+  min_yaw_speed: 0.01
+
+# Initialization step size for interpolating joint targets
+init_position_max_step_delta: 0.01
 
 # Incremental safety limits (commands farther than these from current pose are rejected)
 incremental_safety:
