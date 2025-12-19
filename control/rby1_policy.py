@@ -36,7 +36,7 @@ from scipy.spatial.transform import Rotation, Slerp
 
 import yaml
 
-from ik.rby1_whole_body_ik import RBY1WholeBodyIK
+from rby1.whole_body_ik import RBY1WholeBodyIK
 from .rby1_wbc import RBY1WBC
 
 try:  # pragma: no cover - optional dependency
