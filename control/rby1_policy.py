@@ -36,6 +36,7 @@ from scipy.spatial.transform import Rotation, Slerp
 
 import yaml
 
+from rby1.frame_transforms import MODEL_TO_TCP_FRAME, TCP_TO_MODEL_FRAME
 from rby1.whole_body_ik import RBY1WholeBodyIK
 from .rby1_wbc import RBY1WBC
 
@@ -428,7 +429,7 @@ class RBY1PolicyRobot:
             now = time.monotonic()
             query_time = now
             payload = self._sample_scheduled_payload(query_time)
-            if payload is not None and {"left_tf", "right_tf"}.issubset(payload):
+            if payload is not None and {"gripper_left_tf", "gripper_right_tf"}.issubset(payload):
                 self.apply_action(payload, duration=command_dt, timestamp=now)
                 with self._action_lock:
                     # Store the last command actually sent to the robot for smoother interpolation.
@@ -612,11 +613,11 @@ class RBY1PolicyRobot:
         timestamps = np.array([obs.timestamp for obs in observations], dtype=np.float64)
         return {
             "timestamp": timestamps,
-            "gripper_left_tf": stack_tf("left_tf"),
-            "gripper_right_tf": stack_tf("right_tf"),
+            "gripper_left_tf": stack_tf("gripper_left_tf"),
+            "gripper_right_tf": stack_tf("gripper_right_tf"),
             "head_tf": stack_tf("head_tf"),
-            "gripper_left_gripper_width": stack_scalar("left_width"),
-            "gripper_right_gripper_width": stack_scalar("right_width"),
+            "gripper_left_gripper_width": stack_scalar("gripper_left_gripper_width"),
+            "gripper_right_gripper_width": stack_scalar("gripper_right_gripper_width"),
         }
 
     # ------------------------------------------------------------------
@@ -668,7 +669,7 @@ class RBY1PolicyRobot:
 
     def _sample_scheduled_payload(self, query_time: float) -> Optional[Dict[str, np.ndarray]]:
         def _contains_tf(payload: Dict[str, np.ndarray]) -> bool:
-            return any(k.endswith("_tf") for k in payload)
+            return any(k.endswith("_tf") or k == "camera_head_lookatpoint" for k in payload)
 
         def _contains_gripper(payload: Dict[str, np.ndarray]) -> bool:
             return any("gripper_width" in k for k in payload)
@@ -706,7 +707,7 @@ class RBY1PolicyRobot:
             eef_prev, eef_future = _select_actions(_contains_tf)
             gripper_prev, gripper_future = _select_actions(_contains_gripper)
 
-        eef_payload = _resolve_payload(eef_prev, eef_future, lambda k: k.endswith("_tf"))
+        eef_payload = _resolve_payload(eef_prev, eef_future, lambda k: k.endswith("_tf") or k == "camera_head_lookatpoint")
         gripper_payload = _resolve_payload(gripper_prev, gripper_future, lambda k: "gripper_width" in k)
 
         if eef_payload is None and gripper_payload is None:
@@ -718,7 +719,7 @@ class RBY1PolicyRobot:
         if gripper_payload is not None:
             result.update(gripper_payload)
 
-        for key in ("left_gripper_width", "right_gripper_width"):
+        for key in ("gripper_left_gripper_width", "gripper_right_gripper_width"):
             if key in result:
                 result[key] = self._clamp_gripper_width(float(np.asarray(result[key]).reshape(-1)[0]))
         return result
@@ -744,6 +745,17 @@ class RBY1PolicyRobot:
 
         self.queue_actions([ScheduledAction(timestamp=float(timestamp), duration=float(duration), payload=payload)])
 
+    def _current_head_tf_model(self) -> np.ndarray:
+        tf = np.eye(4, dtype=float)
+        data = getattr(self._backend, "_data", None)
+        if data is None:
+            data = getattr(self._backend, "data", None)
+        if data is None:
+            raise RuntimeError("Backend does not expose MuJoCo data for head pose")
+        tf[:3, 3] = np.asarray(data.site_xpos[self._head_site], dtype=float)
+        tf[:3, :3] = np.asarray(data.site_xmat[self._head_site], dtype=float).reshape(3, 3)
+        return tf
+
     def apply_action(
         self,
         action: Dict[str, np.ndarray],
@@ -752,12 +764,12 @@ class RBY1PolicyRobot:
     ) -> None:
         """Forward a single Cartesian action to the WBC."""
 
-        for key in ("left_tf", "right_tf"):
+        for key in ("gripper_left_tf", "gripper_right_tf"):
             if key not in action:
                 raise KeyError(f"Missing required action field '{key}'")
 
-        left_tf = np.asarray(action["left_tf"], dtype=float).reshape(4, 4)
-        right_tf = np.asarray(action["right_tf"], dtype=float).reshape(4, 4)
+        left_tf = np.asarray(action["gripper_left_tf"], dtype=float).reshape(4, 4)
+        right_tf = np.asarray(action["gripper_right_tf"], dtype=float).reshape(4, 4)
         head_tf = action.get("head_tf")
         head_tf = None if head_tf is None else np.asarray(head_tf, dtype=float).reshape(4, 4)
 
@@ -771,11 +783,45 @@ class RBY1PolicyRobot:
         right_pos, right_quat = _tf_to_pos_quat(right_tf)
         head_pos = None
         head_quat = None
+        head_model_tf = None
         if head_tf is not None:
             head_pos, head_quat = _tf_to_pos_quat(head_tf)
+        head_lookatpoint = action.get("camera_head_lookatpoint")
+        if head_lookatpoint is not None:
+            assert head_tf is None, "Cannot specify both head_tf and camera_head_lookatpoint"
+            head_lookatpoint = np.asarray(head_lookatpoint, dtype=float).reshape(3)
+            head_model_tf = self._current_head_tf_model()
+            head_tcp_tf = head_model_tf @ MODEL_TO_TCP_FRAME["head"]
+            head_pos = head_model_tf[:3, 3]
 
-        left_width = float(action["left_gripper_width"]) if "left_gripper_width" in action else None
-        right_width = float(action["right_gripper_width"]) if "right_gripper_width" in action else None
+            direction = head_lookatpoint - head_tcp_tf[:3, 3]
+            direction_norm = float(np.linalg.norm(direction))
+            if direction_norm < 1e-8:
+                direction = head_tcp_tf[:3, 2]
+                direction_norm = float(np.linalg.norm(direction))
+            z_axis = direction / (direction_norm + 1e-8)
+
+            current_tcp_x = head_tcp_tf[:3, :3][:, 0]
+            x_axis = current_tcp_x - np.dot(current_tcp_x, z_axis) * z_axis
+            x_norm = float(np.linalg.norm(x_axis))
+            if x_norm < 1e-6:
+                world_up = np.array([0.0, 0.0, 1.0], dtype=float)
+                x_axis = world_up - np.dot(world_up, z_axis) * z_axis
+                x_norm = float(np.linalg.norm(x_axis))
+                if x_norm < 1e-6:
+                    x_axis = np.array([1.0, 0.0, 0.0], dtype=float)
+                else:
+                    x_axis /= x_norm
+            else:
+                x_axis /= x_norm
+            y_axis = np.cross(z_axis, x_axis)
+            rot_tcp = np.stack([x_axis, y_axis, z_axis], axis=-1)
+            rot_model = rot_tcp @ TCP_TO_MODEL_FRAME["head"][:3, :3]
+            head_quat_xyzw = Rotation.from_matrix(rot_model).as_quat()
+            head_quat = np.array([head_quat_xyzw[3], head_quat_xyzw[0], head_quat_xyzw[1], head_quat_xyzw[2]])
+
+        left_width = float(action["gripper_left_gripper_width"]) if "gripper_left_gripper_width" in action else None
+        right_width = float(action["gripper_right_gripper_width"]) if "gripper_right_gripper_width" in action else None
 
         self._backend.update_targets(
             left_pos=left_pos,
@@ -784,7 +830,7 @@ class RBY1PolicyRobot:
             right_quat=right_quat,
             left_width=left_width,
             right_width=right_width,
-            head_pos=None if head_pos is None else head_pos,
+            head_pos=head_pos,
             head_quat=head_quat,
             duration=self.dt if duration is None else float(duration),
             timestamp=timestamp,

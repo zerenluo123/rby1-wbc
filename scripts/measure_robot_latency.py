@@ -162,8 +162,8 @@ def main() -> None:
             target_tf[axis_index, 3] = base_pose[axis_index, 3] + offset
 
         payload = {
-            "left_tf": target_tf if args.arm == "left" else left_tf,
-            "right_tf": target_tf if args.arm == "right" else right_tf,
+            "gripper_left_tf": target_tf if args.arm == "left" else left_tf,
+            "gripper_right_tf": target_tf if args.arm == "right" else right_tf,
             "head_tf": target_tf if args.arm == "head" else head_tf,
         }
         robot.apply_action(payload, duration=command_period, timestamp=now)

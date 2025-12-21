@@ -10,13 +10,13 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import zmq
-from scipy.spatial.transform import Rotation
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 PROJECT_ROOT = str(PROJECT_ROOT)
 
+from rby1.frame_transforms import MODEL_TO_TCP_FRAME, TCP_TO_MODEL_FRAME, apply_transform_tf
 from camera.camera_stream import AravisCameraStreamer
 from control.rby1_policy import RBY1PolicyRobot
 
@@ -25,36 +25,8 @@ OBS_TF_KEYS = {
     "right": "gripper_right_tf",
     "head": "head_tf",
 }
-PAYLOAD_TF_KEYS = {
-    "left": "left_tf",
-    "right": "right_tf",
-    "head": "head_tf",
-}
+PAYLOAD_TF_KEYS = dict(OBS_TF_KEYS)
 GRIPPER_WIDTH_LIMITS = (0.0, 0.085)
-
-
-def _rpy_to_matrix(rpy: Sequence[float]) -> np.ndarray:
-    return Rotation.from_euler("xyz", np.asarray(rpy, dtype=float)).as_matrix()
-
-
-def _make_transform(rotation_rpy: Sequence[float], translation: Sequence[float]) -> np.ndarray:
-    mat = np.eye(4, dtype=float)
-    mat[:3, :3] = _rpy_to_matrix(rotation_rpy)
-    mat[:3, 3] = np.asarray(translation, dtype=float)
-    return mat
-
-
-MODEL_TO_TCP_FRAME = {
-    "left": _make_transform([np.pi, 0.0, 0.0], [0.0, 0.0, -0.2]),
-    "right": _make_transform([0.0, np.pi, 0.0], [0.0, 0.0, -0.2]),
-    "head": _make_transform([-np.pi / 2.0, 0.0, -np.pi / 2.0], [0.04, 0.0, 0.0601]),
-}
-TCP_TO_MODEL_FRAME = {name: np.linalg.inv(mat) for name, mat in MODEL_TO_TCP_FRAME.items()}
-
-
-def _apply_transform_tf(tf: np.ndarray, transform: np.ndarray) -> np.ndarray:
-    return tf @ transform
-
 
 def _convert_robot_observations(
     robot_obs: Dict[str, np.ndarray],
@@ -64,7 +36,7 @@ def _convert_robot_observations(
     for effector, key in OBS_TF_KEYS.items():
         if key not in robot_obs or effector not in transform_map:
             continue
-        converted[key] = _apply_transform_tf(robot_obs[key], transform_map[effector])
+        converted[key] = apply_transform_tf(robot_obs[key], transform_map[effector])
     return converted
 
 
@@ -82,13 +54,21 @@ def _offset_gripper_action(payload: Dict[str, np.ndarray], offset: float) -> Dic
     if offset == 0.0:
         return payload
     adjusted = dict(payload)
-    if "left_gripper_width" in adjusted:
-        adjusted["left_gripper_width"] = float(
-            np.clip(adjusted["left_gripper_width"] - offset, GRIPPER_WIDTH_LIMITS[0], GRIPPER_WIDTH_LIMITS[1])
+    if "gripper_left_gripper_width" in adjusted:
+        adjusted["gripper_left_gripper_width"] = float(
+            np.clip(
+                adjusted["gripper_left_gripper_width"] - offset,
+                GRIPPER_WIDTH_LIMITS[0],
+                GRIPPER_WIDTH_LIMITS[1],
+            )
         )
-    if "right_gripper_width" in adjusted:
-        adjusted["right_gripper_width"] = float(
-            np.clip(adjusted["right_gripper_width"] - offset, GRIPPER_WIDTH_LIMITS[0], GRIPPER_WIDTH_LIMITS[1])
+    if "gripper_right_gripper_width" in adjusted:
+        adjusted["gripper_right_gripper_width"] = float(
+            np.clip(
+                adjusted["gripper_right_gripper_width"] - offset,
+                GRIPPER_WIDTH_LIMITS[0],
+                GRIPPER_WIDTH_LIMITS[1],
+            )
         )
     return adjusted
 
@@ -144,13 +124,15 @@ def build_action_sequence(actions_tf: Dict[str, np.ndarray]) -> List[Dict[str, n
                 continue
             payload[PAYLOAD_TF_KEYS[effector]] = tf_series[idx]
         if "gripper_left_gripper_width" in actions_tf:
-            payload["left_gripper_width"] = float(actions_tf["gripper_left_gripper_width"][idx].reshape(-1)[0])
+            payload["gripper_left_gripper_width"] = float(actions_tf["gripper_left_gripper_width"][idx].reshape(-1)[0])
         if "gripper_right_gripper_width" in actions_tf:
-            payload["right_gripper_width"] = float(actions_tf["gripper_right_gripper_width"][idx].reshape(-1)[0])
+            payload["gripper_right_gripper_width"] = float(
+                actions_tf["gripper_right_gripper_width"][idx].reshape(-1)[0]
+            )
 
         for effector, key in PAYLOAD_TF_KEYS.items():
             if key in payload and effector in TCP_TO_MODEL_FRAME:
-                payload[key] = _apply_transform_tf(payload[key], TCP_TO_MODEL_FRAME[effector])
+                payload[key] = apply_transform_tf(payload[key], TCP_TO_MODEL_FRAME[effector])
         if payload:
             sequence.append(payload)
     return sequence

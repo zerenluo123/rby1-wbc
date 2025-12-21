@@ -136,11 +136,11 @@ def main() -> None:
         target_width = args.offset + args.amplitude * math.sin(2.0 * math.pi * args.frequency * phase)
         target_width = float(np.clip(target_width, 0.0, 0.085))
         payload = {
-            "left_tf": left_tf,
-            "right_tf": right_tf,
+            "gripper_left_tf": left_tf,
+            "gripper_right_tf": right_tf,
             "head_tf": head_tf,
-            "left_gripper_width": target_width,
-            "right_gripper_width": target_width,
+            "gripper_left_gripper_width": target_width,
+            "gripper_right_gripper_width": target_width,
         }
         robot.apply_action(payload, duration=command_period, timestamp=now)
         commands.append((now, target_width))

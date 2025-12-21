@@ -15,6 +15,8 @@ import numpy as np
 import zmq
 from scipy.spatial.transform import Rotation
 
+from rby1.frame_transforms import MODEL_TO_TCP_FRAME, TCP_TO_MODEL_FRAME, apply_transform_tf
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -47,40 +49,12 @@ class DebugActionRequest:
         self.approved = decision
         self.decision_event.set()
 
-
-def _rpy_to_matrix(rpy: Sequence[float]) -> np.ndarray:
-    return Rotation.from_euler("xyz", np.asarray(rpy, dtype=float)).as_matrix()
-
-
-def _make_transform(rotation_rpy: Sequence[float], translation: Sequence[float]) -> np.ndarray:
-    mat = np.eye(4, dtype=float)
-    mat[:3, :3] = _rpy_to_matrix(rotation_rpy)
-    mat[:3, 3] = np.asarray(translation, dtype=float)
-    return mat
-
-
-MODEL_TO_TCP_FRAME = {
-    "left": _make_transform([np.pi, 0.0, 0.0], [0.0, 0.0, -0.2]),
-    "right": _make_transform([0.0, np.pi, 0.0], [0.0, 0.0, -0.2]),
-    "head": _make_transform([-np.pi / 2.0, 0.0, -np.pi / 2.0], [0.04, 0.0, 0.0601]),
-}
-TCP_TO_MODEL_FRAME = {name: np.linalg.inv(mat) for name, mat in MODEL_TO_TCP_FRAME.items()}
-
 OBS_TF_KEYS = {
     "left": "gripper_left_tf",
     "right": "gripper_right_tf",
     "head": "head_tf",
 }
-PAYLOAD_TF_KEYS = {
-    "left": "left_tf",
-    "right": "right_tf",
-    "head": "head_tf",
-}
 GRIPPER_WIDTH_LIMITS = (0.0, 0.085)
-
-
-def _apply_transform_tf(tf: np.ndarray, transform: np.ndarray) -> np.ndarray:
-    return tf @ transform
 
 
 def _convert_robot_observations(
@@ -91,7 +65,7 @@ def _convert_robot_observations(
     for effector, key in OBS_TF_KEYS.items():
         if key not in robot_obs or effector not in transform_map:
             continue
-        converted[key] = _apply_transform_tf(robot_obs[key], transform_map[effector])
+        converted[key] = apply_transform_tf(robot_obs[key], transform_map[effector])
     return converted
 
 
@@ -106,23 +80,6 @@ def _offset_gripper_obs(
         if key in adjusted:
             adjusted[key] = np.asarray(adjusted[key], dtype=float) + offset
     return adjusted
-
-
-def _offset_gripper_action(
-    payload: Dict[str, np.ndarray],
-    offset: float,
-) -> Dict[str, np.ndarray]:
-    adjusted = dict(payload)
-    if "left_gripper_width" in adjusted:
-        adjusted["left_gripper_width"] = float(
-            np.clip(adjusted["left_gripper_width"] - offset, GRIPPER_WIDTH_LIMITS[0], GRIPPER_WIDTH_LIMITS[1])
-        )
-    if "right_gripper_width" in adjusted:
-        adjusted["right_gripper_width"] = float(
-            np.clip(adjusted["right_gripper_width"] - offset, GRIPPER_WIDTH_LIMITS[0], GRIPPER_WIDTH_LIMITS[1])
-        )
-    return adjusted
-
 
 def _merge_camera_timestamps(camera_ts: Dict[str, np.ndarray]) -> np.ndarray:
     """Use the slowest camera as the reference observation clock."""
@@ -160,6 +117,42 @@ def _camera_latency_for(key: str, global_override: Optional[float], overrides: D
     if key in overrides:
         return float(overrides[key])
     return float(DEFAULT_CAMERA_LATENCIES.get(key, 0.0))
+
+
+def _derive_required_env_obs_keys(obs_meta: Dict[str, object]) -> set[str]:
+    """Translate policy observation meta into the raw observation keys the server expects."""
+
+    required: set[str] = set()
+    if not isinstance(obs_meta, dict):
+        return required
+
+    for key, attr in obs_meta.items():
+        if not isinstance(attr, dict):
+            continue
+        obs_type = attr.get("type", "low_dim")
+        if obs_type in {"rgb", "pointmap"}:
+            required.add(key)
+        elif obs_type == "low_dim" and "eef" not in key:
+            required.add(key)
+
+        if "_eef_pos" in key:
+            prefix = key.split("_eef_pos")[0]
+            required.add(f"{prefix}_tf")
+            width_key = f"{prefix}_gripper_width"
+            if width_key in obs_meta:
+                required.add(width_key)
+        if "_eef_rot_axis_angle" in key:
+            prefix = key.split("_eef_rot_axis_angle")[0]
+            required.add(f"{prefix}_tf")
+
+        # Head frame is needed to transform pointmaps / lookatpoint into the requested frame
+        if obs_type == "pointmap" or key == "camera_head_lookatpoint":
+            required.add("head_tf")
+        if obs_type == "pointmap":
+            required.add(key.replace("_pointmap", "_main_rgb"))
+            required.add(key.replace("_pointmap", "_main_right_rgb"))
+
+    return required
 
 class PolicyClient:
     """Thin ZMQ wrapper that talks to the detached policy server."""
@@ -219,7 +212,7 @@ def build_scheduled_actions(
     eef_length = max(
         (
             np.asarray(actions_tf[key]).shape[0]
-            for key in OBS_TF_KEYS.values()
+            for key in ("gripper_left_tf", "gripper_right_tf", "head_tf", "camera_head_lookatpoint")
             if key in actions_tf and actions_tf[key] is not None
         ),
         default=0,
@@ -241,17 +234,18 @@ def build_scheduled_actions(
         for idx in range(eef_length):
             payload: Dict[str, np.ndarray] = {}
             for effector, obs_key in OBS_TF_KEYS.items():
-                if obs_key not in actions_tf:
+                payload_key = obs_key
+                if effector == "head" and "camera_head_lookatpoint" in actions_tf:
+                    payload_key = "camera_head_lookatpoint"
+                if payload_key not in actions_tf:
                     continue
-                tf_series = np.asarray(actions_tf[obs_key], dtype=float)
-                if idx >= tf_series.shape[0]:
+                series = np.asarray(actions_tf[payload_key])
+                if idx >= series.shape[0]:
                     continue
-                payload[PAYLOAD_TF_KEYS[effector]] = tf_series[idx]
-
-            for effector, key in PAYLOAD_TF_KEYS.items():
-                if key in payload and effector in TCP_TO_MODEL_FRAME:
-                    payload[key] = _apply_transform_tf(payload[key], TCP_TO_MODEL_FRAME[effector])
-
+                value = series[idx]
+                if effector in TCP_TO_MODEL_FRAME and (payload_key.endswith("_tf")):
+                    value = apply_transform_tf(value, TCP_TO_MODEL_FRAME[effector])
+                payload[payload_key] = value
             if not payload:
                 continue
 
@@ -270,13 +264,13 @@ def build_scheduled_actions(
             if "gripper_left_gripper_width" in actions_tf:
                 width_series = np.asarray(actions_tf["gripper_left_gripper_width"], dtype=float)
                 if idx < width_series.shape[0]:
-                    payload["left_gripper_width"] = np.clip(
+                    payload["gripper_left_gripper_width"] = np.clip(
                         float(width_series[idx].reshape(-1)[0]) - 0.003, GRIPPER_WIDTH_LIMITS[0], GRIPPER_WIDTH_LIMITS[1]
                     )
             if "gripper_right_gripper_width" in actions_tf:
                 width_series = np.asarray(actions_tf["gripper_right_gripper_width"], dtype=float)
                 if idx < width_series.shape[0]:
-                    payload["right_gripper_width"] = np.clip(
+                    payload["gripper_right_gripper_width"] = np.clip(
                         float(width_series[idx].reshape(-1)[0]) - 0.003, GRIPPER_WIDTH_LIMITS[0], GRIPPER_WIDTH_LIMITS[1]
                     )
 
@@ -315,15 +309,10 @@ def _plot_action_chunk(
 
     if not actions:
         return None
-
-    end_effector_keys = {
-        "left": "left_tf",
-        "right": "right_tf",
-        "head": "head_tf",
-    }
     ee_trajectories: Dict[str, np.ndarray] = {}
     ee_orientations: Dict[str, np.ndarray] = {}
-    for name, payload_key in end_effector_keys.items():
+    lookat_points: List[np.ndarray] = []
+    for name, payload_key in OBS_TF_KEYS.items():
         coords: List[np.ndarray] = []
         rots: List[np.ndarray] = []
         for action in actions:
@@ -337,9 +326,14 @@ def _plot_action_chunk(
             ee_trajectories[name] = np.vstack(coords)
             ee_orientations[name] = np.vstack(rots)
 
+    for action in actions:
+        payload = action.payload
+        if "camera_head_lookatpoint" in payload:
+            lookat_points.append(np.asarray(payload["camera_head_lookatpoint"], dtype=float).reshape(3))
+
     other_keys = sorted({key for action in actions for key in action.payload})
-    excluded_keys = set(end_effector_keys.values())
-    excluded_keys.update([f"{name}_rot_axis_angle" for name in end_effector_keys])
+    excluded_keys = set(OBS_TF_KEYS.values())
+    excluded_keys.update([f"{name}_rot_axis_angle" for name in OBS_TF_KEYS])
     plot_data: List[Tuple[str, np.ndarray]] = []
     for key in other_keys:
         if key in excluded_keys:
@@ -445,6 +439,32 @@ def _plot_action_chunk(
         ax.set_xlabel("X (m)")
         ax.set_ylabel("Y (m)")
         ax.set_zlabel("Z (m)")
+        if lookat_points:
+            lookat_arr = np.vstack(lookat_points)
+            ax.scatter(
+                lookat_arr[:, 0],
+                lookat_arr[:, 1],
+                lookat_arr[:, 2],
+                color="c",
+                marker="*",
+                s=60,
+                alpha=0.8,
+                label="head lookat",
+            )
+            head_traj = ee_trajectories.get("head")
+            if head_traj is not None and len(head_traj) and len(lookat_arr):
+                seg_len = min(len(head_traj), len(lookat_arr))
+                for idx in range(seg_len):
+                    start = head_traj[idx]
+                    end = lookat_arr[idx]
+                    ax.plot(
+                        [start[0], end[0]],
+                        [start[1], end[1]],
+                        [start[2], end[2]],
+                        color="c",
+                        linestyle="--",
+                        alpha=0.6,
+                    )
         ax.legend(loc="best")
         _set_axes_equal(ax)
         figures.append(fig)
@@ -698,10 +718,10 @@ def main() -> None:
                             (
                                 obs.timestamp,
                                 {
-                                    "left_tf": obs.left_tf.copy(),
-                                    "right_tf": obs.right_tf.copy(),
-                                    "left_gripper_width": np.array([obs.left_width], dtype=float),
-                                    "right_gripper_width": np.array([obs.right_width], dtype=float),
+                                    "gripper_left_tf": obs.left_tf.copy(),
+                                    "gripper_right_tf": obs.right_tf.copy(),
+                                    "gripper_left_gripper_width": np.array([obs.left_width], dtype=float),
+                                    "gripper_right_gripper_width": np.array([obs.right_width], dtype=float),
                                 },
                             )
                         )
@@ -729,7 +749,11 @@ def main() -> None:
             timeout=args.policy_timeout,
         )
         _ = policy_client.request_observation_keys()
-        print(f"[policy] Required observation keys: {policy_client.observation_keys}")
+        policy_obs_meta = policy_client.observation_keys.get("obs", {}) if isinstance(policy_client.observation_keys, dict) else {}
+        required_env_obs_keys = _derive_required_env_obs_keys(policy_obs_meta)
+        if required_env_obs_keys:
+            print(f"[policy] Policy server requires obs keys: {sorted(required_env_obs_keys)}")
+        # print(f"[policy] Required observation keys: {policy_client.observation_keys}")
 
         def inference_worker() -> None:
             while not stop_event.is_set():
@@ -789,9 +813,19 @@ def main() -> None:
                 policy_robot_obs = _offset_gripper_obs(policy_robot_obs, args.gripper_width_offset)
                 obs_dict = {k: v for k, v in policy_robot_obs.items() if k != "timestamp"}
                 if camera_obs is not None:
-                    obs_dict.update(camera_obs)
+                    for key, value in camera_obs.items():
+                        if required_env_obs_keys and key not in required_env_obs_keys:
+                            continue
+                        obs_dict[key] = value
 
                 obs_dict["timestamp"] = anchor_timestamps
+                if required_env_obs_keys:
+                    missing_obs_keys = [k for k in required_env_obs_keys if k not in obs_dict]
+                    if missing_obs_keys:
+                        print(f"[policy] Missing required observation keys from policy server: {missing_obs_keys}")
+                        if stop_event.wait(timeout=control_dt):
+                            break
+                        continue
                 # Policy inference
                 infer_start = time.monotonic()
                 reply = policy_client.infer(obs_dict)
@@ -896,10 +930,19 @@ def main() -> None:
                 )
                 if scheduled_actions:
                     if args.debug_actions and debug_request_queue is not None:
+                        current_obs = robot.get_latest_observation()
+                        current_pose = None
+                        if current_obs is not None:
+                            current_pose = {
+                                "gripper_left_tf": current_obs.left_tf.copy(),
+                                "gripper_right_tf": current_obs.right_tf.copy(),
+                                "head_tf": current_obs.head_tf.copy(),
+                            }
                         # Plot scheduled actions against the robot pose expressed
                         # in the same (model) frame the controller uses.
                         request = DebugActionRequest(
                             actions=scheduled_actions,
+                            current_pose=current_pose,
                             image_obs=debug_images,
                         )
                         debug_request_queue.put(request)
@@ -922,10 +965,10 @@ def main() -> None:
                                 (
                                     obs.timestamp,
                                     {
-                                        "left_tf": obs.left_tf.copy(),
-                                        "right_tf": obs.right_tf.copy(),
-                                        "left_gripper_width": np.array([obs.left_width], dtype=float),
-                                        "right_gripper_width": np.array([obs.right_width], dtype=float),
+                                        "gripper_left_tf": obs.left_tf.copy(),
+                                        "gripper_right_tf": obs.right_tf.copy(),
+                                        "gripper_left_gripper_width": np.array([obs.left_width], dtype=float),
+                                        "gripper_right_gripper_width": np.array([obs.right_width], dtype=float),
                                     },
                                 )
                             )
@@ -978,10 +1021,10 @@ def main() -> None:
                         (
                             obs.timestamp,
                             {
-                                "left_tf": obs.left_tf.copy(),
-                                "right_tf": obs.right_tf.copy(),
-                                "left_gripper_width": np.array([obs.left_width], dtype=float),
-                                "right_gripper_width": np.array([obs.right_width], dtype=float),
+                                "gripper_left_tf": obs.left_tf.copy(),
+                                "gripper_right_tf": obs.right_tf.copy(),
+                                "gripper_left_gripper_width": np.array([obs.left_width], dtype=float),
+                                "gripper_right_gripper_width": np.array([obs.right_width], dtype=float),
                             },
                         )
                     )
@@ -989,7 +1032,7 @@ def main() -> None:
                 def _tf_pos(tf: np.ndarray) -> np.ndarray:
                     return np.asarray(tf, dtype=float).reshape(4, 4)[:3, 3]
 
-                def _series_to_lines(series: List[Tuple[float, Dict[str, np.ndarray]]], key: str):
+                def _series_to_lines(series: List[Tuple[float, Dict[str, np.ndarray]]], eff: str):
                     series_sorted = sorted(
                         series,
                         key=lambda item: float(np.asarray(item[0]).ravel()[0]) if item and item[0] is not None else 0.0,
@@ -999,22 +1042,26 @@ def main() -> None:
                     ys: List[float] = []
                     zs: List[float] = []
                     for t, payload in series_sorted:
-                        tf_key = f"{key}_tf"
-                        if tf_key in payload:
-                            pos = _tf_pos(payload[tf_key])
-                            ts.append(t)
-                            xs.append(pos[0])
-                            ys.append(pos[1])
-                            zs.append(pos[2])
-                        elif key in payload:
-                            pos = _tf_pos(payload[key])
-                            ts.append(t)
-                            xs.append(pos[0])
-                            ys.append(pos[1])
-                            zs.append(pos[2])
+                        tf_keys = (
+                            f"{eff}_tf",
+                            f"gripper_{eff}_tf",
+                            eff,
+                        )
+                        chosen = None
+                        for tf_key in tf_keys:
+                            if tf_key in payload:
+                                chosen = payload[tf_key]
+                                break
+                        if chosen is None:
+                            continue
+                        pos = _tf_pos(chosen)
+                        ts.append(t)
+                        xs.append(pos[0])
+                        ys.append(pos[1])
+                        zs.append(pos[2])
                     return ts, xs, ys, zs
 
-                def _series_to_width(series: List[Tuple[float, Dict[str, np.ndarray]]], key: str):
+                def _series_to_width(series: List[Tuple[float, Dict[str, np.ndarray]]], eff: str):
                     series_sorted = sorted(
                         series,
                         key=lambda item: float(np.asarray(item[0]).ravel()[0]) if item and item[0] is not None else 0.0,
@@ -1022,11 +1069,20 @@ def main() -> None:
                     ts: List[float] = []
                     vals: List[float] = []
                     for t, payload in series_sorted:
-                        width_key = f"{key}_gripper_width"
-                        if width_key in payload:
-                            width_val = float(np.asarray(payload[width_key]).reshape(-1)[0])
-                            ts.append(t)
-                            vals.append(width_val)
+                        width_keys = (
+                            f"{eff}_gripper_width",
+                            f"gripper_{eff}_gripper_width",
+                        )
+                        chosen = None
+                        for w_key in width_keys:
+                            if w_key in payload:
+                                chosen = payload[w_key]
+                                break
+                        if chosen is None:
+                            continue
+                        width_val = float(np.asarray(chosen).reshape(-1)[0])
+                        ts.append(t)
+                        vals.append(width_val)
                     return ts, vals
 
                 plt.clf()
