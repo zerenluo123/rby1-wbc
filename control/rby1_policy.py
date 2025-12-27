@@ -204,7 +204,9 @@ class _SimBackend:
         right_width: Optional[float] = None,
         head_pos: Optional[np.ndarray] = None,
         head_quat: Optional[np.ndarray] = None,
+        head_lookatpoint: Optional[np.ndarray] = None,
         duration: float = 0.1,
+        timestamp: Optional[float] = None,
     ) -> None:
         sol_qpos, sol_vel, success, _ = self._ik.solve(
             left_target_pos=left_pos,
@@ -538,8 +540,7 @@ class RBY1PolicyRobot:
     def get_observation_window(
         self,
         horizon: int,
-        stride: int = 1,
-        obs_frequency: Optional[float] = None,
+        step: float = 0.1,
     ) -> Dict[str, np.ndarray]:
         """Return stacked arrays compatible with the policy server.
 
@@ -547,59 +548,47 @@ class RBY1PolicyRobot:
         ----------
         horizon:
             Number of historical steps to collect (oldest to newest).
-        stride:
-            Step between samples inside the internal buffer.  ``stride=1`` means
-            consecutive observations, ``stride=2`` picks every other entry, etc.
-        obs_frequency:
-            If provided, overrides the internal buffer frequency to simulate a
-            different observation rate. This only affects the timestamps returned
-            and does not interpolate any data. should be combined with stride.
+        step:
+            Time interval between observations in seconds.
         """
-
         horizon = int(max(horizon, 1))
-        stride = int(max(stride, 1))
         with self._buffer_lock:
             if not self._buffer:
                 raise RuntimeError("Robot observation buffer is empty")
             buffer_list = list(self._buffer)
-            if obs_frequency is None or len(buffer_list) < 2:
-                items: Iterable[RobotObservation] = buffer_list[-horizon * stride :: stride]
-                observations = list(items)
-            else:
-                latest_timestamp = buffer_list[-1].timestamp
-                step = float(stride) / max(obs_frequency, 1e-6)
-                desired_timestamps = latest_timestamp - step * np.arange(horizon - 1, -1, -1, dtype=float)
-                buffer_timestamps = np.array([obs.timestamp for obs in buffer_list], dtype=float)
+            latest_timestamp = buffer_list[-1].timestamp
+            desired_timestamps = latest_timestamp - step * np.arange(horizon - 1, -1, -1, dtype=float)
+            buffer_timestamps = np.array([obs.timestamp for obs in buffer_list], dtype=float)
 
-                def _build_tf_interp(get_tf: Callable[[RobotObservation], np.ndarray]) -> _PoseInterpolator:
-                    poses = np.stack([_tf_to_posevec(get_tf(obs)) for obs in buffer_list], axis=0)
-                    return _PoseInterpolator(buffer_timestamps, poses)
+            def _build_tf_interp(get_tf: Callable[[RobotObservation], np.ndarray]) -> _PoseInterpolator:
+                poses = np.stack([_tf_to_posevec(get_tf(obs)) for obs in buffer_list], axis=0)
+                return _PoseInterpolator(buffer_timestamps, poses)
 
-                left_interp = _build_tf_interp(lambda obs: obs.left_tf)
-                right_interp = _build_tf_interp(lambda obs: obs.right_tf)
-                head_interp = _build_tf_interp(lambda obs: obs.head_tf)
+            left_interp = _build_tf_interp(lambda obs: obs.left_tf)
+            right_interp = _build_tf_interp(lambda obs: obs.right_tf)
+            head_interp = _build_tf_interp(lambda obs: obs.head_tf)
 
-                def _interp_scalar(attr: str) -> np.ndarray:
-                    values = np.stack([getattr(obs, attr) for obs in buffer_list], axis=0)
-                    return _build_interp1d(buffer_timestamps, values.reshape(-1, 1))
+            def _interp_scalar(attr: str) -> np.ndarray:
+                values = np.stack([getattr(obs, attr) for obs in buffer_list], axis=0)
+                return _build_interp1d(buffer_timestamps, values.reshape(-1, 1))
 
-                left_width_interp = _interp_scalar("left_width")
-                right_width_interp = _interp_scalar("right_width")
+            left_width_interp = _interp_scalar("left_width")
+            right_width_interp = _interp_scalar("right_width")
 
-                left_tf = _posevec_to_tf(left_interp(desired_timestamps))
-                right_tf = _posevec_to_tf(right_interp(desired_timestamps))
-                head_tf = _posevec_to_tf(head_interp(desired_timestamps))
-                left_width = left_width_interp(desired_timestamps)
-                right_width = right_width_interp(desired_timestamps)
+            left_tf = _posevec_to_tf(left_interp(desired_timestamps))
+            right_tf = _posevec_to_tf(right_interp(desired_timestamps))
+            head_tf = _posevec_to_tf(head_interp(desired_timestamps))
+            left_width = left_width_interp(desired_timestamps)
+            right_width = right_width_interp(desired_timestamps)
 
-                return {
-                    "timestamp": desired_timestamps,
-                    "gripper_left_tf": left_tf,
-                    "gripper_right_tf": right_tf,
-                    "head_tf": head_tf,
-                    "gripper_left_gripper_width": left_width.reshape(-1, 1),
-                    "gripper_right_gripper_width": right_width.reshape(-1, 1),
-                }
+            return {
+                "timestamp": desired_timestamps,
+                "gripper_left_tf": left_tf,
+                "gripper_right_tf": right_tf,
+                "head_tf": head_tf,
+                "gripper_left_gripper_width": left_width.reshape(-1, 1),
+                "gripper_right_gripper_width": right_width.reshape(-1, 1),
+            }
 
         if len(observations) < horizon:
             observations = [observations[0]] * (horizon - len(observations)) + observations
@@ -787,7 +776,7 @@ class RBY1PolicyRobot:
         if head_tf is not None:
             head_pos, head_quat = _tf_to_pos_quat(head_tf)
         head_lookatpoint = action.get("camera_head_lookatpoint")
-        if head_lookatpoint is not None:
+        if head_lookatpoint is not None and self._backend._head_control_mode == "ik":
             assert head_tf is None, "Cannot specify both head_tf and camera_head_lookatpoint"
             head_lookatpoint = np.asarray(head_lookatpoint, dtype=float).reshape(3)
             head_model_tf = self._current_head_tf_model()
@@ -823,6 +812,7 @@ class RBY1PolicyRobot:
         left_width = float(action["gripper_left_gripper_width"]) if "gripper_left_gripper_width" in action else None
         right_width = float(action["gripper_right_gripper_width"]) if "gripper_right_gripper_width" in action else None
 
+        # print(f"[rby1_policy] Applying action: left_pos={left_pos}, left_quat={left_quat}, right_pos={right_pos}, right_quat={right_quat}, left_width={left_width}, right_width={right_width}, head_pos={head_pos}, head_quat={head_quat}, head_lookatpoint={head_lookatpoint}, duration={duration}, timestamp={timestamp}")  # pragma: no cover - debug aid
         self._backend.update_targets(
             left_pos=left_pos,
             left_quat=left_quat,
@@ -832,6 +822,7 @@ class RBY1PolicyRobot:
             right_width=right_width,
             head_pos=head_pos,
             head_quat=head_quat,
+            head_lookatpoint=head_lookatpoint,
             duration=self.dt if duration is None else float(duration),
             timestamp=timestamp,
         )

@@ -40,6 +40,8 @@ class EETargets:
     head_quat_start: Optional[np.ndarray] = None
     head_pos: Optional[np.ndarray] = None
     head_quat: Optional[np.ndarray] = None
+    head_lookatpoint_start: Optional[np.ndarray] = None
+    head_lookatpoint: Optional[np.ndarray] = None
 
     def set_targets(
         self,
@@ -51,6 +53,7 @@ class EETargets:
         right_width: Optional[float] = None,
         head_pos: Optional[np.ndarray] = None,
         head_quat: Optional[np.ndarray] = None,
+        head_lookatpoint: Optional[np.ndarray] = None,
         duration: Optional[float] = None,
         timestamp: Optional[float] = None,
     ) -> None:
@@ -68,6 +71,7 @@ class EETargets:
 
             prev_head_pos = self.head_pos.copy() if self.head_pos is not None else None
             prev_head_quat = self.head_quat.copy() if self.head_quat is not None else None
+            prev_head_lookat = self.head_lookatpoint.copy() if self.head_lookatpoint is not None else None
 
             self.left_pos_start = prev_left_pos if prev_left_pos is not None else left_pos.copy()
             self.left_quat_start = prev_left_quat if prev_left_quat is not None else left_quat.copy()
@@ -79,6 +83,11 @@ class EETargets:
 
             self.head_pos_start = prev_head_pos if prev_head_pos is not None else (None if head_pos is None else head_pos.copy())
             self.head_quat_start = prev_head_quat if prev_head_quat is not None else (None if head_quat is None else head_quat.copy())
+            self.head_lookatpoint_start = (
+                prev_head_lookat
+                if prev_head_lookat is not None
+                else (None if head_lookatpoint is None else head_lookatpoint.copy())
+            )
 
             # Set new targets
             self.left_pos = left_pos.copy()
@@ -89,6 +98,7 @@ class EETargets:
             self.right_width = None if right_width is None else float(right_width)
             self.head_pos = None if head_pos is None else head_pos.copy()
             self.head_quat = None if head_quat is None else head_quat.copy()
+            self.head_lookatpoint = None if head_lookatpoint is None else head_lookatpoint.copy()
 
             duration_value = 0.0 if duration is None else max(0.0, float(duration))
             self.duration = duration_value
@@ -126,6 +136,19 @@ class EETargets:
             hq = slerp_quaternion(self.head_quat_start, self.head_quat, alpha)
 
         return lt_p, lt_q, lw, rt_p, rt_q, rw, hp, hq
+
+    def get_head_lookatpoint(self, use_interpolation: bool = False) -> Optional[np.ndarray]:
+        if not use_interpolation:
+            with self.lock:
+                return None if self.head_lookatpoint is None else self.head_lookatpoint.copy()
+
+        current_time = time.monotonic()
+        with self.lock:
+            duration = max(self.duration, 0.0)
+            elapsed = max(0.0, current_time - self.timestamp)
+            alpha = min(1.0, elapsed / duration) if duration > 0.0 else 1.0
+            value = lerp_value(self.head_lookatpoint_start, self.head_lookatpoint, alpha)
+        return None if value is None else np.asarray(value, dtype=float).copy()
 
     def get_target(self) -> Tuple[
         Optional[np.ndarray],

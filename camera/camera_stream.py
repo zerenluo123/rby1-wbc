@@ -346,8 +346,7 @@ class AravisCameraStreamer:
     def get_observation_window(
         self,
         horizon: int,
-        stride: int = 1,
-        obs_frequency: Optional[float] = None,
+        step: float = 0.1,
         *,
         include_timestamps: bool = False,
     ) -> Dict[str, np.ndarray] | tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
@@ -360,7 +359,7 @@ class AravisCameraStreamer:
         """
 
         horizon = int(max(horizon, 1))
-        stride = int(max(stride, 1))
+        step = float(max(step, 1e-2))
 
         with self._buffers_lock:
             buffers_copy = {k: list(v) for k, v in self._buffers.items()}
@@ -370,17 +369,11 @@ class AravisCameraStreamer:
         for key, frames in buffers_copy.items():
             if not frames:
                 raise RuntimeError(f"No frames available for camera '{key}'")
-            if obs_frequency is None or len(frames) < 2:
-                selected: List[CameraFrame] = frames[-horizon * stride :: stride]
-                if len(selected) < horizon:
-                    selected = [selected[0]] * (horizon - len(selected)) + selected
-            else:
-                latest_ts = frames[-1].timestamp
-                step = float(stride) / max(obs_frequency, 1e-6)
-                desired_ts = latest_ts - step * np.arange(horizon - 1, -1, -1, dtype=float)
-                frame_ts = np.array([frame.timestamp for frame in frames], dtype=float)
-                idx = np.abs(frame_ts[:, None] - desired_ts[None, :]).argmin(axis=0)
-                selected = [frames[i] for i in idx]
+            latest_ts = frames[-1].timestamp
+            desired_ts = latest_ts - step * np.arange(horizon - 1, -1, -1, dtype=float)
+            frame_ts = np.array([frame.timestamp for frame in frames], dtype=float)
+            idx = np.abs(frame_ts[:, None] - desired_ts[None, :]).argmin(axis=0)
+            selected = [frames[i] for i in idx]
             observations[key] = np.stack([frame.image for frame in selected], axis=0)
             timestamps[key] = np.array([frame.timestamp for frame in selected], dtype=float)
 

@@ -611,9 +611,7 @@ def main() -> None:
     parser.add_argument("--policy-ip", default="127.0.0.1")
     parser.add_argument("--policy-port", type=int, default=8766)
     parser.add_argument("--robot-horizon", type=int, default=2)
-    parser.add_argument("--robot-stride", type=int, default=3)
     parser.add_argument("--camera-horizon", type=int, default=2)
-    parser.add_argument("--camera-stride", type=int, default=3)
     parser.add_argument("--state-only", action="store_true", help="Skip camera streaming")
     parser.add_argument("--mock-cameras", action="store_true", help="Generate synthetic camera images")
     parser.add_argument("--control-dt", type=float, default=0.1)
@@ -623,7 +621,6 @@ def main() -> None:
         default=0.8,
         help="Target interval between policy inference calls in seconds.",
     )
-    parser.add_argument("--obs_frequency", type=float, default=60.0, help="Observation frequency in Hz")
     parser.add_argument("--policy-timeout", type=float, default=2.0, help="ZMQ request timeout in seconds")
     parser.add_argument("--executor-lookahead", type=float, default=0.0, help="Execution loop lookahead in seconds")
     parser.add_argument(
@@ -703,7 +700,7 @@ def main() -> None:
         robot.wait_until_ready()
         if args.plot_tracking:
             robot.set_execution_hook(lambda ts, payload: tracking_exec.append((ts, payload)))
-        required_robot_samples = max(int(args.robot_horizon * args.robot_stride / (robot.dt * args.obs_frequency)), 20)
+        required_robot_samples = max(int(args.robot_horizon * control_dt / (robot.dt)), 20)
         if not robot.wait_for_observations(required_robot_samples, timeout=5.0):
             raise TimeoutError("Timed out waiting for initial robot observations")
 
@@ -735,7 +732,7 @@ def main() -> None:
             camera_streamer.start()
             try:
                 camera_streamer.wait_until_ready(
-                    min_frames=max(args.camera_horizon * args.camera_stride, 1),
+                    min_frames=max(args.camera_horizon * control_dt / camera_streamer._frame_rate, 1),
                     timeout=2.0,
                 )
             except TimeoutError as exc:
@@ -777,8 +774,7 @@ def main() -> None:
                     try:
                         camera_result = camera_streamer.get_observation_window(
                             horizon=args.camera_horizon,
-                            stride=args.camera_stride,
-                            obs_frequency=args.obs_frequency,
+                            step=control_dt,
                             include_timestamps=True,
                         )
                         camera_obs, camera_timestamps = camera_result

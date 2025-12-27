@@ -17,6 +17,7 @@ from loop_rate_limiters import RateLimiter
 
 from rby1.whole_body_ik import RBY1WholeBodyIK
 from rby1.ee_targets import EETargets, _normalize_quaternion
+from rby1.frame_transforms import MODEL_TO_TCP_FRAME, TCP_TO_MODEL_FRAME
 from . import (
     AdmittanceController,
     AdmittanceControllerConfig,
@@ -109,6 +110,9 @@ class RBY1WBC:
         self.max_incremental_translation = float(incremental_cfg.get("max_translation_m", 0.05))
         self.max_incremental_rotation_deg = float(incremental_cfg.get("max_rotation_deg", 20.0))
 
+        head_control_cfg = self.config.get("head_control", {})
+        self._head_control_mode = str(head_control_cfg.get("mode", "ik")).lower()
+
         admittance_cfg = require("admittance")
         self.admittance_enabled = bool(admittance_cfg.get("enabled", False))
         self._admittance_initialized = False
@@ -152,6 +156,14 @@ class RBY1WBC:
         self._head_ee_site_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_SITE, "head"
         )
+        self._head_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "link_head_1")
+        self._head_parent_body_id = None
+        if self._head_body_id >= 0:
+            self._head_parent_body_id = int(self.model.body_parentid[self._head_body_id])
+        self._head_joint_ids = {
+            "head_0": mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "head_0"),
+            "head_1": mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "head_1"),
+        }
         if self._left_ee_site_id < 0 or self._right_ee_site_id < 0:
             raise RuntimeError("End-effector body IDs could not be resolved in the MuJoCo model.")
 
@@ -239,6 +251,7 @@ class RBY1WBC:
         right_width: Optional[float] = None,
         head_pos: Optional[np.ndarray] = None,
         head_quat: Optional[np.ndarray] = None,
+        head_lookatpoint: Optional[np.ndarray] = None,
         duration: Optional[float] = None,
         timestamp: Optional[float] = None,
     ) -> bool:
@@ -265,6 +278,7 @@ class RBY1WBC:
             right_width=right_width,
             head_pos=head_pos,
             head_quat=head_quat,
+            head_lookatpoint=head_lookatpoint,
             duration=duration,
             timestamp=timestamp,
         )
@@ -535,6 +549,7 @@ class RBY1WBC:
             current_qpos: Optional[np.ndarray] = self.snapshot_to_qpos(snapshot)
             now = time.monotonic()
             left_pos, left_quat, left_width, right_pos, right_quat, right_width, head_pos, head_quat = self.ee_targets.get_for_ik(use_interpolation=self.use_interpolation)
+            head_lookatpoint = self.ee_targets.get_head_lookatpoint(use_interpolation=self.use_interpolation)
 
             if current_qpos is None or left_pos is None or right_pos is None:
                 self.ik_rate.sleep()
@@ -581,13 +596,22 @@ class RBY1WBC:
                         self._admittance_wrench_right,
                     )
             ik_start = time.perf_counter()
+            head_override = None
+            head_pos_for_ik = head_pos
+            head_quat_for_ik = head_quat
+            if self._head_control_mode == "direct_lookat" and head_lookatpoint is not None:
+                head_override = self._compute_head_lookat_angles(current_qpos, head_lookatpoint)
+                head_pos_for_ik = None
+                head_quat_for_ik = None
+
+            # print(f"[wbc] IK targets L pos={left_pos}, quat={left_quat}; R pos={right_pos}, quat={right_quat}; head pos={head_pos_for_ik}, quat={head_quat_for_ik}, override={head_override}")
             sol_qpos, sol_vel, success, _info = self.ik_solver.solve(
                 left_target_pos=left_pos,
                 left_target_quat=left_quat,
                 right_target_pos=right_pos,
                 right_target_quat=right_quat,
-                head_target_pos=head_pos,
-                head_target_quat=head_quat,
+                head_target_pos=head_pos_for_ik,
+                head_target_quat=head_quat_for_ik,
                 current_qpos=current_qpos,
                 dt=self.ik_rate.dt,
             )
@@ -600,7 +624,7 @@ class RBY1WBC:
                 if self.gripper and left_width is not None and right_width is not None:
                     self.gripper.set_target([right_width, left_width])
                 self.robot_state.store_gripper_widths(left_width, right_width)
-                body_targets = self._compute_body_commands(sol_qpos)
+                body_targets = self._compute_body_commands(sol_qpos, head_override=head_override)
                 twist = self._compute_base_twist_command(sol_qpos, sol_vel, current_qpos)
                 self.controller.set_body_position_targets(body_targets.tolist())
                 self.controller.set_base_twist_command(twist)
@@ -609,7 +633,74 @@ class RBY1WBC:
 
             self.ik_rate.sleep()
 
-    def _compute_body_commands(self, sol_qpos: np.ndarray) -> np.ndarray:
+    def _compute_head_lookat_angles(
+        self,
+        current_qpos: np.ndarray,
+        lookatpoint: np.ndarray,
+    ) -> Optional[np.ndarray]:
+        if self._head_parent_body_id is None or self._head_parent_body_id < 0:
+            return None
+        if self._head_ee_site_id < 0:
+            return None
+
+        target = np.asarray(lookatpoint, dtype=float).reshape(3)
+        with self._model_lock:
+            self.data.qpos[:] = current_qpos
+            mujoco.mj_forward(self.model, self.data)
+            head_model_tf = np.eye(4, dtype=float)
+            head_model_tf[:3, 3] = self.data.site_xpos[self._head_ee_site_id].copy()
+            head_model_tf[:3, :3] = self.data.site_xmat[self._head_ee_site_id].reshape(3, 3)
+            body_xmat = getattr(self.data, "body_xmat", None)
+            if body_xmat is None:
+                body_xmat = self.data.xmat
+            parent_rot = body_xmat[self._head_parent_body_id].reshape(3, 3)
+
+        head_tcp_tf = head_model_tf @ MODEL_TO_TCP_FRAME["head"]
+        direction = target - head_tcp_tf[:3, 3]
+        norm = float(np.linalg.norm(direction))
+        if norm < 1e-8:
+            direction = head_tcp_tf[:3, 2]
+            norm = float(np.linalg.norm(direction))
+        if norm < 1e-8:
+            return None
+        z_axis = direction / (norm + 1e-8)
+
+        current_tcp_x = head_tcp_tf[:3, :3][:, 0]
+        x_axis = current_tcp_x - np.dot(current_tcp_x, z_axis) * z_axis
+        x_norm = float(np.linalg.norm(x_axis))
+        if x_norm < 1e-6:
+            world_up = np.array([0.0, 0.0, 1.0], dtype=float)
+            x_axis = world_up - np.dot(world_up, z_axis) * z_axis
+            x_norm = float(np.linalg.norm(x_axis))
+            if x_norm < 1e-6:
+                x_axis = np.array([1.0, 0.0, 0.0], dtype=float)
+            else:
+                x_axis /= x_norm
+        else:
+            x_axis /= x_norm
+        y_axis = np.cross(z_axis, x_axis)
+
+        rot_tcp = np.stack([x_axis, y_axis, z_axis], axis=-1)
+        rot_model = rot_tcp @ TCP_TO_MODEL_FRAME["head"][:3, :3]
+        rot_parent_head = parent_rot.T @ rot_model
+
+        yaw = math.atan2(rot_parent_head[1, 0], rot_parent_head[0, 0])
+        pitch = math.atan2(-rot_parent_head[2, 0], rot_parent_head[2, 2])
+
+        angles = np.array([yaw, pitch], dtype=float)
+        for idx, name in enumerate(("head_0", "head_1")):
+            joint_id = self._head_joint_ids.get(name, -1)
+            if joint_id is None or joint_id < 0:
+                continue
+            limits = self.model.jnt_range[joint_id]
+            angles[idx] = float(np.clip(angles[idx], limits[0], limits[1]))
+        return angles
+
+    def _compute_body_commands(
+        self,
+        sol_qpos: np.ndarray,
+        head_override: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
         positions_sdk = np.zeros(len(self._sdk_joint_names), dtype=float)
         for i, adr in enumerate(self._sdk_to_mj_qadr):
             if adr is not None:
@@ -622,6 +713,9 @@ class RBY1WBC:
         head_idxs = [name_to_idx[f"head_{i}"] for i in range(2)]
         ordered = torso_idxs + left_idxs + right_idxs + head_idxs
         body_targets = positions_sdk[ordered]
+        if head_override is not None:
+            head_override = np.asarray(head_override, dtype=float).reshape(2)
+            body_targets[-2:] = head_override
         return body_targets
 
     def _configure_admittance(self, config: Optional[Mapping[str, Any]]) -> None:
