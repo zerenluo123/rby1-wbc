@@ -49,6 +49,14 @@ class DebugActionRequest:
         self.approved = decision
         self.decision_event.set()
 
+
+@dataclass
+class DebugImageRequest:
+    image_obs: Dict[str, np.ndarray]
+    output_dir: Path
+    batch_tag: str
+    bgr_to_rgb: bool
+
 OBS_TF_KEYS = {
     "left": "gripper_left_tf",
     "right": "gripper_right_tf",
@@ -535,6 +543,81 @@ def _plot_image_observations(
     return _cleanup
 
 
+def _sanitize_camera_key(key: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in key)
+
+
+def _normalize_image_frames(frames: np.ndarray, *, bgr_to_rgb: bool) -> np.ndarray:
+    if frames.ndim == 3:
+        frames = frames[:, :, :, None]
+    if frames.ndim != 4:
+        raise ValueError(f"Expected frames with shape (T, H, W, C), got {frames.shape}")
+
+    if frames.shape[-1] == 1:
+        frames = np.repeat(frames, 3, axis=-1)
+    elif frames.shape[-1] != 3:
+        raise ValueError(f"Expected 1 or 3 channels, got {frames.shape[-1]}")
+
+    if np.issubdtype(frames.dtype, np.floating):
+        frames = np.clip(frames, 0.0, 1.0) * 255.0
+    else:
+        frames = np.clip(frames, 0, 255)
+    if bgr_to_rgb:
+        frames = frames[..., ::-1]
+    return frames.astype(np.uint8, copy=False)
+
+
+def _save_debug_images(request: DebugImageRequest) -> None:
+    try:
+        import cv2  # type: ignore
+    except Exception as exc:  # pragma: no cover - optional dependency
+        print(f"[debug] Unable to save images (cv2 missing): {exc}")
+        return
+
+    request.output_dir.mkdir(parents=True, exist_ok=True)
+    for key, frames in request.image_obs.items():
+        safe_key = _sanitize_camera_key(key)
+        try:
+            image_frames = _normalize_image_frames(np.asarray(frames), bgr_to_rgb=request.bgr_to_rgb)
+        except ValueError as exc:
+            print(f"[debug] Skipping images for '{key}': {exc}")
+            continue
+        for idx, frame in enumerate(image_frames):
+            output_path = request.output_dir / f"{request.batch_tag}_{safe_key}_frame_{idx:04d}.png"
+            bgr = frame[..., ::-1]
+            if not cv2.imwrite(str(output_path), bgr):
+                print(f"[debug] Failed to write image '{output_path}'")
+
+
+def _start_debug_image_worker(
+    bgr_to_rgb: bool = True,
+    max_queue: int = 4,
+) -> tuple["queue.Queue[Optional[DebugImageRequest]]", threading.Thread, threading.Event]:
+    image_queue: "queue.Queue[Optional[DebugImageRequest]]" = queue.Queue(maxsize=max_queue)
+    stop_event = threading.Event()
+
+    def _worker() -> None:
+        while True:
+            if stop_event.is_set() and image_queue.empty():
+                break
+            try:
+                request = image_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if request is None:
+                if stop_event.is_set():
+                    break
+                continue
+            try:
+                _save_debug_images(request)
+            except Exception as exc:  # pragma: no cover - best effort saver
+                print(f"[debug] Failed to save debug images: {exc}")
+
+    thread = threading.Thread(target=_worker, name="debug-image-writer", daemon=True)
+    thread.start()
+    return image_queue, thread, stop_event
+
+
 def _confirm_action_execution(
     actions: Sequence[ScheduledAction],
     current_pose: Optional[Dict[str, np.ndarray]] = None,
@@ -659,6 +742,16 @@ def main() -> None:
         action="store_true",
         help="Plot action batches and require manual confirmation before execution.",
     )
+    parser.add_argument(
+        "--debug-save-images",
+        action="store_true",
+        help="Save camera images for each action batch (independent of --debug-actions).",
+    )
+    parser.add_argument(
+        "--debug-video-dir",
+        default="log/debug_action_videos",
+        help="Output directory for debug action images.",
+    )
     parser.add_argument("--align-first-action", action="store_true", help="Rigidly align each action chunk to the current robot pose before execution.")
     parser.add_argument("--sim-only", action="store_true", help="Run without the realtime controller and preview actions in Mujoco.")
     parser.add_argument("--sim-model", default=None, help="Optional custom MJCF path for --sim-only mode.")
@@ -689,6 +782,11 @@ def main() -> None:
     debug_request_queue: Optional["queue.Queue[DebugActionRequest]"] = (
         queue.Queue() if args.debug_actions else None
     )
+    debug_image_queue: Optional["queue.Queue[Optional[DebugImageRequest]]"] = None
+    debug_image_thread: Optional[threading.Thread] = None
+    debug_image_stop: Optional[threading.Event] = None
+    debug_image_counter = [0]
+    debug_image_root: Optional[Path] = None
     tracking_cmd: List[Tuple[float, Dict[str, np.ndarray]]] = []
     tracking_policy_raw: List[Tuple[float, Dict[str, np.ndarray]]] = []
     tracking_exec: List[Tuple[float, Dict[str, np.ndarray]]] = []
@@ -739,6 +837,12 @@ def main() -> None:
                 print(f"[camera] {exc}")
         elif args.sim_only and not args.state_only:
             print("[camera] Skipping camera streamer in simulation mode.")
+
+        if args.debug_save_images:
+            debug_image_root = Path(args.debug_video_dir) / time.strftime("%Y%m%d_%H%M%S")
+            debug_image_queue, debug_image_thread, debug_image_stop = _start_debug_image_worker(
+                bgr_to_rgb=True,
+            )
 
         policy_client = PolicyClient(
             ip=args.policy_ip,
@@ -951,6 +1055,25 @@ def main() -> None:
                             print("[debug] Action batch rejected; skipping execution.")
                             continue
 
+                    if (
+                        debug_image_queue is not None
+                        and debug_images is not None
+                        and not debug_image_queue.full()
+                    ):
+                        debug_image_counter[0] += 1
+                        stamp = time.strftime("%Y%m%d_%H%M%S")
+                        output_dir = debug_image_root if debug_image_root is not None else Path(args.debug_video_dir)
+                        debug_image_queue.put(
+                            DebugImageRequest(
+                                image_obs=debug_images,
+                                output_dir=output_dir,
+                                batch_tag=f"{stamp}_{debug_image_counter[0]:03d}",
+                                bgr_to_rgb=True,
+                            )
+                        )
+                    elif debug_image_queue is not None and debug_images is not None:
+                        print("[debug] Image queue full; dropping debug image batch.")
+
                     if args.plot_tracking:
                         tracking_cmd.extend([(a.timestamp, a.payload) for a in scheduled_actions])
                     robot.queue_actions(scheduled_actions)
@@ -997,6 +1120,11 @@ def main() -> None:
         stop_event.set()
         for thread in threads:
             thread.join(timeout=1.0)
+        if debug_image_stop is not None and debug_image_queue is not None:
+            debug_image_stop.set()
+            debug_image_queue.put(None)
+        if debug_image_thread is not None:
+            debug_image_thread.join(timeout=1.0)
         if tracking_state_thread is not None:
             tracking_state_thread.join(timeout=1.0)
         if camera_streamer is not None:

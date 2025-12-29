@@ -14,3 +14,4 @@ build/
 *.png
 *.txt
 *.mp4
+**/log**
