@@ -199,7 +199,10 @@ class RBY1WBC:
         self._state_thread.start()
         self._ik_thread.start()
         self._threads_started = True
-        self.wait_for_first_state()
+        snapshot = self.wait_for_first_state()
+        self._print_joint_angles(snapshot)
+        self._print_gripper_poses(snapshot)
+        self._print_base_tilt(snapshot)
         if self.base_reset_enabled:
             self._reset_base_pose()
         self._set_init_position()
@@ -379,6 +382,58 @@ class RBY1WBC:
             time.sleep(0.005)
         raise Exception("Timeout waiting for first valid robot state snapshot")
 
+    def _print_joint_angles(self, snapshot: Optional[RobotSnapshot]) -> None:
+        if snapshot is None or not snapshot.is_valid:
+            print("[wbc] No valid robot snapshot; skipping joint angle printout.")
+            return
+        positions = np.asarray(snapshot.joint_position, dtype=float)
+        names = getattr(self, "_sdk_joint_names", [])
+        if not names or positions.size == 0:
+            print("[wbc] No joint positions available; skipping joint angle printout.")
+            return
+        count = min(len(names), len(positions))
+        print("[wbc] Joint angles at initialization:")
+        for idx in range(count):
+            print(f"  {names[idx]}: {positions[idx]:.6f}")
+        if len(positions) != len(names):
+            print(f"[wbc] Note: {len(positions)} positions, {len(names)} names.")
+
+    def _print_gripper_poses(self, snapshot: Optional[RobotSnapshot]) -> None:
+        qpos = self.snapshot_to_qpos(snapshot) if snapshot is not None else None
+        if qpos is None:
+            print("[wbc] No valid robot snapshot; skipping gripper pose printout.")
+            return
+        left_pose, right_pose = self._compute_end_effector_world_pose(qpos)
+        left_pos, left_quat = left_pose[:3], left_pose[3:]
+        right_pos, right_quat = right_pose[:3], right_pose[3:]
+        print("[wbc] Gripper poses at initialization (world frame):")
+        print(
+            f"  left:  pos=({left_pos[0]:.4f}, {left_pos[1]:.4f}, {left_pos[2]:.4f}) "
+            f"quat=({left_quat[0]:.4f}, {left_quat[1]:.4f}, {left_quat[2]:.4f}, {left_quat[3]:.4f})"
+        )
+        print(
+            f"  right: pos=({right_pos[0]:.4f}, {right_pos[1]:.4f}, {right_pos[2]:.4f}) "
+            f"quat=({right_quat[0]:.4f}, {right_quat[1]:.4f}, {right_quat[2]:.4f}, {right_quat[3]:.4f})"
+        )
+
+    def _print_base_tilt(self, snapshot: Optional[RobotSnapshot]) -> None:
+        qpos = self.snapshot_to_qpos(snapshot) if snapshot is not None else None
+        if qpos is None:
+            print("[wbc] No valid robot snapshot; skipping base tilt printout.")
+            return
+        if self._base_free_adr is None:
+            print("[wbc] Base free joint not available; skipping base tilt printout.")
+            return
+        base_quat = qpos[self._base_free_adr + 3 : self._base_free_adr + 7]
+        roll, pitch, yaw = self._rpy_from_quat(base_quat)
+        roll_deg = math.degrees(roll)
+        pitch_deg = math.degrees(pitch)
+        yaw_deg = math.degrees(yaw)
+        print(
+            "[wbc] Base tilt at initialization (deg): "
+            f"roll={roll_deg:.3f}, pitch={pitch_deg:.3f}, yaw={yaw_deg:.3f}"
+        )
+
     def snapshot_to_qpos(self, snapshot: RobotSnapshot) -> Optional[np.ndarray]:
         if snapshot is None or not snapshot.is_valid:
             return None
@@ -449,8 +504,9 @@ class RBY1WBC:
 
         delta = target_body - start_body
         max_delta = float(np.max(np.abs(delta)))
+        target_body_list = target_body.tolist()
         if max_delta < 1e-6:
-            self.controller.set_body_position_targets(target_body.tolist())
+            self.controller.set_body_position_targets(target_body_list)
         else:
             max_step = max(float(self.init_position_max_step_delta), 1e-6)
             steps = max(10, int(np.ceil(max_delta / max_step)))
@@ -459,7 +515,12 @@ class RBY1WBC:
                 cmd = start_body + alpha * delta
                 self.controller.set_body_position_targets(cmd.tolist())
                 self.ik_rate.sleep()
-            self.controller.set_body_position_targets(target_body.tolist())
+            self.controller.set_body_position_targets(target_body_list)
+
+        hold_deadline = time.monotonic() + 3.0
+        while not self._stop.is_set() and time.monotonic() < hold_deadline:
+            self.controller.set_body_position_targets(target_body_list)
+            time.sleep(0.05)
 
         if self.gripper and gripper_targets is not None:
             self.gripper.set_target(gripper_targets.tolist())
@@ -1002,6 +1063,22 @@ class RBY1WBC:
     def _yaw_from_quat(q: np.ndarray) -> float:
         w, x, y, z = float(q[0]), float(q[1]), float(q[2]), float(q[3])
         return math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+
+    @staticmethod
+    def _rpy_from_quat(q: np.ndarray) -> Tuple[float, float, float]:
+        w, x, y, z = float(q[0]), float(q[1]), float(q[2]), float(q[3])
+        sinr_cosp = 2 * (w * x + y * z)
+        cosr_cosp = 1 - 2 * (x * x + y * y)
+        roll = math.atan2(sinr_cosp, cosr_cosp)
+        sinp = 2 * (w * y - z * x)
+        if abs(sinp) >= 1:
+            pitch = math.copysign(math.pi / 2, sinp)
+        else:
+            pitch = math.asin(sinp)
+        siny_cosp = 2 * (w * z + x * y)
+        cosy_cosp = 1 - 2 * (y * y + z * z)
+        yaw = math.atan2(siny_cosp, cosy_cosp)
+        return roll, pitch, yaw
 
     @staticmethod
     def _angle_difference(target: float, source: float) -> float:

@@ -287,3 +287,9 @@ ip addr flush dev enp2s0f0 || true
 ip addr add 192.168.88.2/24 dev enp2s0f0 || true
 ip link set enp2s0f0 up || true
 ```
+
+Trouble shooting:
+If you can access 192.168.88.2 and can see the camera data being transfered, but arv-viewer doesn't work or camera devices can't be found, it might be because firewall is blocking the data stream. try 
+```bash
+sudo ufw disable
+```
