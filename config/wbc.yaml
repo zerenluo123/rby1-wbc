@@ -1,22 +1,26 @@
 # Robot gRPC address
-address: "192.168.30.1:50051"
-# address: "localhost:50051"
+# address: "192.168.30.1:50051"
+address: "localhost:50051"
 
 # Robot configuration parameters
 # model_path: "/model/rby1/rby1_mocap.xml"
 model_path: "/model/rby1/rby1.xml"
 init_position:
-  torso: [0.0, 0.7854, -1.5708, 0.7854, 0.0, 0.0]
+  # torso: [0.0, 0.7854, -1.5708, 0.7854, 0.0, 0.0]
   # torso: [0.0, 0.9162979, -1.8326, 0.9162979, 0.0, 0.0]
   # left_arm: [0.0, 0.0873, 0.0, -2.0944, 0.0, 0.9599, -1.5708]
-  left_arm: [0.0, 0.0873, 0.0, -2.0944, 0.0, 1.0472, -1.5708]
+  # left_arm: [0.0, 0.0873, 0.0, -2.0944, 0.0, 1.0472, -1.5708]
   # left_arm: [0.0, 0.0873, 0.0, -2.00713, 0.0, 0.698132, -1.5708]
   # right_arm: [0.0, -0.0873, 0.0, -2.0944, 0.0, 0.9599, 1.5708]
-  right_arm: [0.0, -0.0873, 0.0, -2.0944, 0.0, 1.0472, 1.5708]
+  # right_arm: [0.0, -0.0873, 0.0, -2.0944, 0.0, 1.0472, 1.5708]
   # right_arm: [0.0, -0.0873, 0.0, -2.00713, 0.0, 0.698132, 1.5708]
-  head: [0.0, 0.6109]
+  # head: [0.0, 0.6109]
   # head: [0.0, 0.698132]
   grippers: [0.08, 0.08]
+  torso: [0.0, 0.7854, -0.96, 0.1746, 0.0, 0.0]
+  right_arm:  [0.96, -0.7, 0.096, -2.4, 0.23, 0.187, 0.8]
+  left_arm: [0.96, 0.7, -0.096, -2.4, -0.23, 0.187, -0.8]
+  head: [0.0, 0.872665]
 
 # Controller parameters
 state_frequency_hz: 100.0
@@ -43,8 +47,7 @@ gripper:
 
 # Base control gains
 base_error_gain: [0, 0, 0]  # TRI's IK runs at 500hz and ours at 100hz, so scale the gains by 5x
-base_velocity_gain: [0.1, 0.1, 0.1] # Might need to tune this more
-# base_velocity_gain: [0.05, 0.05, 0.1]
+base_velocity_gain: [0.06, 0.06, 0.1]
 
 # Base reset parameters
 base_reset:

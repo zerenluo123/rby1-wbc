@@ -10,6 +10,8 @@ from typing import Optional, Tuple, Dict
 import mujoco
 import numpy as np
 import yaml
+import qpsolvers
+import scipy.sparse as spa
 
 import mink
 from mink import Limit, Constraint
@@ -72,8 +74,6 @@ class RBY1WholeBodyIK:
     Optimization priorities:
     1. End-effector target positions and orientations (highest priority)
     2. Base Z stays on ground (hard constraint)
-    3. Upper body upright orientation (weak regularization)
-    4. COM stability within base support polygon (medium regularization)
     """
     
     def __init__(self, config_path: str = PROJECT_ROOT + "/config/wbik.yaml"):
@@ -97,13 +97,27 @@ class RBY1WholeBodyIK:
         self.ee_ori_cost = float(require("ee_ori_cost"))
         self.head_pos_cost = float(require("head_pos_cost"))
         self.head_ori_cost = np.asarray(require("head_ori_cost"), dtype=float)
-        self.torso_upright_ori_cost = float(require("torso_upright_ori_cost"))
         self.nominal_posture_cost_main = float(require("nominal_posture_cost_main"))
         self.nominal_posture_cost_head = float(require("nominal_posture_cost_head"))
         self.current_posture_cost_main = float(require("current_posture_cost_main"))
         self.current_posture_cost_head = float(require("current_posture_cost_head"))
-        self.com_over_base_pos_cost = float(require("com_over_base_pos_cost"))
-        self.com_target_height = float(require("com_target_height"))
+        self.com_over_base_pos_cost = float(cfg.get("com_over_base_pos_cost", 0.0))
+        self.com_over_base_xy_bounds = None
+        if "com_over_base_xy_bounds" in cfg:
+            bounds = np.asarray(cfg["com_over_base_xy_bounds"], dtype=float).reshape(-1)
+            if bounds.size == 1:
+                bounds = np.repeat(bounds[0], 2)
+            if bounds.size != 2:
+                raise ValueError(f"com_over_base_xy_bounds must have shape (2,), got {bounds.shape}")
+            if np.any(bounds < 0.0):
+                raise ValueError("com_over_base_xy_bounds must be >= 0")
+            self.com_over_base_xy_bounds = bounds
+        self.com_over_base_xy_target = None
+        if "com_over_base_xy_target" in cfg:
+            target = np.asarray(cfg["com_over_base_xy_target"], dtype=float).reshape(-1)
+            if target.size != 2:
+                raise ValueError(f"com_over_base_xy_target must have shape (2,), got {target.shape}")
+            self.com_over_base_xy_target = target
         self.base_ground_position_cost = np.asarray(require("base_ground_position_cost"), dtype=float)
         self.base_ground_orientation_cost = np.asarray(require("base_ground_orientation_cost"), dtype=float)
         self.nominal_torso_angles = np.asarray(require("nominal_torso_rad"), dtype=float)
@@ -134,6 +148,8 @@ class RBY1WholeBodyIK:
         self.left_ee_name = "end_effector_l"
         self.right_ee_name = "end_effector_r"
         self.head_name = "head"
+        self.base_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, self.base_name)
+        self.torso5_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, self.torso5_name)
         self.head_site_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_SITE, self.head_name
         )
@@ -146,6 +162,7 @@ class RBY1WholeBodyIK:
         ]
 
         assert len(self.torso_qpos_indices) == self.nominal_torso_angles.size
+        assert len(self.torso_dof_indices) == self.nominal_torso_angles.size
         assert len(self.right_arm_qpos_indices) == self.nominal_right_arm_angles.size
         assert len(self.left_arm_qpos_indices) == self.nominal_left_arm_angles.size
         assert len(self.head_qpos_indices) == self.nominal_head_angles.size
@@ -166,6 +183,19 @@ class RBY1WholeBodyIK:
         self._build_limits_cache()
         self._build_tasks_cache()
         self._build_reusable_tasks()
+
+        self._apply_torso_angle_constraints_inplace(self.nominal_torso_angles)
+        if self.com_over_base_xy_target is None:
+            original_qpos = self.data.qpos.copy()
+            nominal_qpos = self._get_nominal_posture(original_qpos.copy())
+            self._apply_torso_qpos_constraints_inplace(nominal_qpos)
+            self.data.qpos[:] = nominal_qpos
+            mujoco.mj_forward(self.model, self.data)
+            d_world = self.data.xpos[self.torso5_body_id] - self.data.xpos[self.base_body_id]
+            R_wb = self.data.xmat[self.base_body_id].reshape(3, 3)
+            self.com_over_base_xy_target = (R_wb.T @ d_world)[:2].copy()
+            self.data.qpos[:] = original_qpos
+            mujoco.mj_forward(self.model, self.data)
     
     def _setup_joint_indices(self):
         """Setup joint indices for different robot parts."""
@@ -191,11 +221,14 @@ class RBY1WholeBodyIK:
         # Torso joints (controlled by IK)
         self.torso_joint_names = [f"torso_{i}" for i in range(6)]
         self.torso_qpos_indices = []
+        self.torso_dof_indices = []
         for name in self.torso_joint_names:
             joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
             if joint_id >= 0:
                 qpos_adr = self.model.jnt_qposadr[joint_id]
                 self.torso_qpos_indices.append(qpos_adr)
+                dof_adr = self.model.jnt_dofadr[joint_id]
+                self.torso_dof_indices.append(dof_adr)
         
         # Left arm joints (controlled by IK)
         self.left_arm_joint_names = [f"left_arm_{i}" for i in range(7)]
@@ -234,6 +267,117 @@ class RBY1WholeBodyIK:
             self.right_arm_qpos_indices +
             self.head_qpos_indices
         )
+
+    def _apply_torso_angle_constraints_inplace(self, torso_angles: np.ndarray) -> None:
+        if torso_angles.shape != (6,):
+            raise ValueError(f"Expected 6 torso angles, got {torso_angles.shape}")
+        torso_angles[0] = 0.0
+        torso_angles[4] = 0.0
+        torso_angles[5] = 0.0
+        torso_angles[3] = -(torso_angles[1] + torso_angles[2])
+
+    def _apply_torso_qpos_constraints_inplace(self, qpos: np.ndarray) -> None:
+        torso_0_qpos, torso_1_qpos, torso_2_qpos, torso_3_qpos, torso_4_qpos, torso_5_qpos = self.torso_qpos_indices
+        qpos[torso_0_qpos] = 0.0
+        qpos[torso_4_qpos] = 0.0
+        qpos[torso_5_qpos] = 0.0
+        qpos[torso_3_qpos] = -(qpos[torso_1_qpos] + qpos[torso_2_qpos])
+
+    def _apply_torso_qvel_constraints_inplace(self, qvel: np.ndarray) -> None:
+        torso_0_dof, torso_1_dof, torso_2_dof, torso_3_dof, torso_4_dof, torso_5_dof = self.torso_dof_indices
+        qvel[torso_0_dof] = 0.0
+        qvel[torso_4_dof] = 0.0
+        qvel[torso_5_dof] = 0.0
+        qvel[torso_3_dof] = -(qvel[torso_1_dof] + qvel[torso_2_dof])
+
+    def _add_torso_velocity_equalities(self, problem: qpsolvers.Problem) -> None:
+        torso_0_dof, torso_1_dof, torso_2_dof, torso_3_dof, torso_4_dof, torso_5_dof = self.torso_dof_indices
+        A = np.zeros((4, self.model.nv), dtype=float)
+        b = np.zeros((4,), dtype=float)
+
+        # Fixed joints: torso_0 == 0, torso_4 == 0, torso_5 == 0  (in velocity space)
+        A[0, torso_0_dof] = 1.0
+        A[1, torso_4_dof] = 1.0
+        A[2, torso_5_dof] = 1.0
+
+        # Coupling: torso_3 == -(torso_1 + torso_2)  =>  d3 + d1 + d2 == 0
+        A[3, torso_3_dof] = 1.0
+        A[3, torso_1_dof] = 1.0
+        A[3, torso_2_dof] = 1.0
+
+        problem.A = A
+        problem.b = b
+
+    def _add_com_over_base_xy_inequalities(self, problem: qpsolvers.Problem) -> None:
+        if self.com_over_base_xy_bounds is None:
+            return
+        if self.com_over_base_xy_target is None:
+            return
+        if self.base_body_id < 0 or self.torso5_body_id < 0:
+            return
+
+        jacp_base = np.zeros((3, self.model.nv), dtype=float)
+        jacr_base = np.zeros((3, self.model.nv), dtype=float)
+        mujoco.mj_jacBody(self.model, self.data, jacp_base, jacr_base, self.base_body_id)
+
+        jacp_torso = np.zeros((3, self.model.nv), dtype=float)
+        jacr_torso = np.zeros((3, self.model.nv), dtype=float)
+        mujoco.mj_jacBody(self.model, self.data, jacp_torso, jacr_torso, self.torso5_body_id)
+
+        d_world = self.data.xpos[self.torso5_body_id] - self.data.xpos[self.base_body_id]
+        J_world = jacp_torso - jacp_base
+
+        R_wb = self.data.xmat[self.base_body_id].reshape(3, 3)
+        R_bw = R_wb.T
+        d_base = R_bw @ d_world
+        J_base = R_bw @ J_world
+
+        bx, by = float(self.com_over_base_xy_bounds[0]), float(self.com_over_base_xy_bounds[1])
+        target_x, target_y = float(self.com_over_base_xy_target[0]), float(self.com_over_base_xy_target[1])
+        err_x = float(d_base[0] - target_x)
+        err_y = float(d_base[1] - target_y)
+
+        G_rows: list[np.ndarray] = []
+        h_rows: list[float] = []
+
+        def add_row(row: np.ndarray, h: float) -> None:
+            G_rows.append(row.astype(float, copy=False))
+            h_rows.append(float(h))
+
+        jx = J_base[0, :]
+        jy = J_base[1, :]
+
+        if abs(err_x) <= bx:
+            add_row(jx, bx - err_x)
+            add_row(-jx, bx + err_x)
+        elif err_x > bx:
+            add_row(jx, 0.0)
+        else:
+            add_row(-jx, 0.0)
+
+        if abs(err_y) <= by:
+            add_row(jy, by - err_y)
+            add_row(-jy, by + err_y)
+        elif err_y > by:
+            add_row(jy, 0.0)
+        else:
+            add_row(-jy, 0.0)
+
+        if not G_rows:
+            return
+        G_add = np.stack(G_rows, axis=0)
+        h_add = np.asarray(h_rows, dtype=float)
+
+        if problem.G is None:
+            problem.G = G_add
+            problem.h = h_add
+            return
+
+        if spa.issparse(problem.G):
+            problem.G = spa.vstack([problem.G, spa.csc_matrix(G_add)])
+        else:
+            problem.G = np.vstack([problem.G, G_add])
+        problem.h = np.hstack([problem.h, h_add])
 
     def _get_nominal_posture(self, base_qpos: np.ndarray) -> np.ndarray:
         """Return a copy of qpos with torso and arm joints set to nominal angles."""
@@ -282,6 +426,10 @@ class RBY1WholeBodyIK:
         # Use current configuration if not provided
         if current_qpos is None:
             current_qpos = self.data.qpos.copy()
+        else:
+            current_qpos = np.asarray(current_qpos, dtype=float).copy()
+
+        self._apply_torso_qpos_constraints_inplace(current_qpos)
         
         # Update MuJoCo data with initial configuration
         self.data.qpos[:] = current_qpos
@@ -367,6 +515,17 @@ class RBY1WholeBodyIK:
         ])
         base_ground_task.set_target(mink.SE3.from_matrix(base_target_matrix))
         tasks.append(base_ground_task)
+
+        if self.com_over_base_pos_cost > 0.0 and self.com_over_base_xy_target is not None:
+            com_over_base_task = self._com_over_base_xy_task
+            com_over_base_task.set_position_cost(
+                [self.com_over_base_pos_cost, self.com_over_base_pos_cost, 0.0]
+            )
+            relative_matrix = np.eye(4)
+            relative_matrix[0, 3] = float(self.com_over_base_xy_target[0])
+            relative_matrix[1, 3] = float(self.com_over_base_xy_target[1])
+            com_over_base_task.set_target(mink.SE3.from_matrix(relative_matrix))
+            tasks.append(com_over_base_task)
         
         # Nominal posture task (keep robot near reference pose)
         nominal_posture_task = self._nominal_posture_task
@@ -389,7 +548,16 @@ class RBY1WholeBodyIK:
         damping = self.damping
         
         try:
-            vel = mink.solve_ik(configuration, tasks, dt, solver, damping, limits=limits)
+            configuration.check_limits(safety_break=False)
+            problem = mink.build_ik(configuration, tasks, dt, damping, limits=limits)
+            self._add_torso_velocity_equalities(problem)
+            self._add_com_over_base_xy_inequalities(problem)
+            result = qpsolvers.solve_problem(problem, solver=solver)
+            if not result.found:
+                raise mink.NoSolutionFound(solver)
+            delta_q = result.x
+            assert delta_q is not None
+            vel = delta_q / float(dt)
             solution_vel = vel.copy()
             configuration.integrate_inplace(vel, dt)
             # Get solution
@@ -406,6 +574,10 @@ class RBY1WholeBodyIK:
                 count = min(solution_vel.shape[0], self.model.nv)
                 padded[:count] = solution_vel[:count]
                 solution_vel = padded
+
+        self._apply_torso_qvel_constraints_inplace(solution_vel)
+        if success:
+            self._apply_torso_qpos_constraints_inplace(solution_qpos)
         
         info = {
             "success": success,
@@ -590,41 +762,7 @@ class RBY1WholeBodyIK:
 
     def _build_tasks_cache(self) -> None:
         """Build once and cache all Mink tasks to avoid per-solve construction overhead."""
-        # Upper body upright orientation (STRONG constraint for stability)
-        # Constrain torso_5 link to point upward - CRITICAL for preventing falls
-        torso_upright_task = mink.FrameTask(
-            frame_name=self.torso5_name,
-            frame_type="body",
-            position_cost=0.0,  # Don't constrain position
-            orientation_cost=[self.torso_upright_ori_cost, self.torso_upright_ori_cost, 0],  # STRONG constraint to maintain upright posture
-            lm_damping=1e-4,
-        )
-        # Set target to upright orientation (identity rotation)
-        upright_matrix = np.eye(4)
-        upright_matrix[:3, 3] = [0, 0, 1.0]  # Dummy position (not used due to position_cost=0)
-        torso_upright_task.set_target(mink.SE3.from_matrix(upright_matrix))
-        
-        # COM stability constraint (medium regularization)
-        # This is approximated by keeping torso_5 position within base support polygon
-        # We use a relative position task between torso and base
-        com_stability_task = mink.RelativeFrameTask(
-            frame_name=self.torso5_name,
-            frame_type="body",
-            root_name=self.base_name,
-            root_type="body",
-            position_cost=[self.com_over_base_pos_cost, self.com_over_base_pos_cost, 0.0],
-            orientation_cost=0.0,
-            lm_damping=1e-4,
-        )
-        # Torso should be above base center with some tolerance
-        relative_matrix = np.eye(4)
-        relative_matrix[:3, 3] = [0, 0, self.com_target_height]  # Torso approximately 0.8m above base
-        com_stability_task.set_target(mink.SE3.from_matrix(relative_matrix))
-
-        self._cached_tasks = [
-            torso_upright_task,
-            com_stability_task,
-        ]
+        self._cached_tasks = []
         
     def _build_reusable_tasks(self) -> None:
         """Create task objects that are re-targeted each solve."""
@@ -655,6 +793,15 @@ class RBY1WholeBodyIK:
             position_cost=self.base_ground_position_cost,
             orientation_cost=self.base_ground_orientation_cost,
             lm_damping=1e-6,
+        )
+        self._com_over_base_xy_task = mink.RelativeFrameTask(
+            frame_name=self.torso5_name,
+            frame_type="body",
+            root_name=self.base_name,
+            root_type="body",
+            position_cost=[0.0, 0.0, 0.0],
+            orientation_cost=0.0,
+            lm_damping=1e-4,
         )
         self._nominal_posture_task = mink.PostureTask(
             model=self.model,
