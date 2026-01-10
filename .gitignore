@@ -15,3 +15,5 @@ build/
 *.txt
 *.mp4
 **/log**
+**/**calib_imgs**
+**/**calib_pairs**

@@ -17,7 +17,10 @@ def make_transform(rotation_rpy: Sequence[float], translation: Sequence[float]) 
 MODEL_TO_TCP_FRAME = {
     "left": make_transform([np.pi, 0.0, 0.0], [0.0, 0.0, -0.2]),
     "right": make_transform([0.0, np.pi, 0.0], [0.0, 0.0, -0.2]),
-    "head": make_transform([-np.pi / 2.0, 0.0, -np.pi / 2.0], [0.04, 0.0, 0.0601]),
+    # "head": make_transform([-np.pi / 2.0, 0.0, -np.pi / 2.0], [0.0346, 0.05, 0.0601]),
+    # "head": make_transform([-np.pi / 2.0, 0.0, -np.pi / 2.0], [0.0706, 0.05, 0.101]),  # taller neck
+    "head": make_transform([-np.pi / 2.0, 0.0, -np.pi / 2.0], [0.0548, 0.05, 0.101]),  # taller neck, switched head camera with wrist
+    # "head": make_transform([-np.pi / 2.0, 0.0, -np.pi / 2.0], [0.06, 0.05, 0.101]),
 }
 TCP_TO_MODEL_FRAME = {name: np.linalg.inv(mat) for name, mat in MODEL_TO_TCP_FRAME.items()}
 
