@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Iterable, List, Tuple
 
 import numpy as np
-from scipy.spatial.transform import Rotation
+from scipy.spatial.transform import Rotation, Slerp
 
 # Ensure the project root is on the import path.
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
@@ -61,6 +61,24 @@ def _linspace(min_val: float, max_val: float, count: int) -> Iterable[float]:
     return np.linspace(min_val, max_val, count)
 
 
+def _iter_intermediate_quats(
+    start_quat: np.ndarray, target_quat: np.ndarray, max_step_deg: float
+) -> List[np.ndarray]:
+    if max_step_deg <= 0.0:
+        return [_normalize(target_quat)]
+    angle_deg = math.degrees(_angle_error(target_quat, start_quat))
+    if angle_deg <= max_step_deg:
+        return [_normalize(target_quat)]
+    steps = int(math.ceil(angle_deg / max_step_deg))
+    key_rots = Rotation.from_quat(
+        np.vstack([_wxyz_to_xyzw(start_quat), _wxyz_to_xyzw(target_quat)])
+    )
+    slerp = Slerp([0.0, 1.0], key_rots)
+    times = np.linspace(0.0, 1.0, steps + 1)[1:]
+    inter_rots = slerp(times).as_quat()
+    return [_normalize(_xyzw_to_wxyz(quat)) for quat in inter_rots]
+
+
 def _transform_wrench_to_ee(wrench: np.ndarray, arm: str) -> np.ndarray:
     transformed = wrench.copy()
     if arm == "left":
@@ -94,6 +112,7 @@ class CalibrationConfig:
     tilt_z_min: float
     tilt_z_max: float
     tilt_z_count: int
+    max_rot_step_deg: float
     move_duration: float
     settle_time: float
     sample_duration: float
@@ -138,6 +157,7 @@ class FTCalibrator:
         time.sleep(self.cfg.settle_time)
 
         initial_quat = _normalize(left_target_quat if self.cfg.arm == "left" else right_target_quat)
+        current_quat = initial_quat.copy()
 
         tilt_x_vals = list(_linspace(self.cfg.tilt_x_min, self.cfg.tilt_x_max, self.cfg.tilt_x_count))
         tilt_y_vals = list(_linspace(self.cfg.tilt_y_min, self.cfg.tilt_y_max, self.cfg.tilt_y_count))
@@ -152,20 +172,32 @@ class FTCalibrator:
                 for tz in tilt_z_vals:
                     print(f"  -> Tilt X={tx:.1f} deg, Y={ty:.1f} deg, Z={tz:.1f} deg")
                     target_quat = _apply_global_tilts(initial_quat, tx, ty, tz)
+                    intermediate_quats = _iter_intermediate_quats(
+                        current_quat, target_quat, self.cfg.max_rot_step_deg
+                    )
+                    step_duration = self.cfg.move_duration / max(len(intermediate_quats), 1)
+                    step_duration = max(0.2, step_duration)
+                    for quat in intermediate_quats:
+                        if self.cfg.arm == "left":
+                            left_target_quat = quat
+                        else:
+                            right_target_quat = quat
+                        self.wbc.update_targets(
+                            left_target_pos,
+                            left_target_quat,
+                            right_target_pos,
+                            right_target_quat,
+                            left_width=gripper_left,
+                            right_width=gripper_right,
+                            duration=step_duration,
+                        )
+                        time.sleep(step_duration)
+                    current_quat = intermediate_quats[-1]
                     if self.cfg.arm == "left":
                         left_target_quat = target_quat
                     else:
                         right_target_quat = target_quat
 
-                    self.wbc.update_targets(
-                        left_target_pos,
-                        left_target_quat,
-                        right_target_pos,
-                        right_target_quat,
-                        left_width=gripper_left,
-                        right_width=gripper_right,
-                        duration=self.cfg.move_duration,
-                    )
                     self._wait_for_settle(target_quat)
                     wrench_avg = self._sample_wrench()
                     pose = self._capture_pose()
@@ -319,6 +351,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--tilt-z-min", type=float, default=-45.0, help="Minimum Z/yaw rotation in degrees.")
     parser.add_argument("--tilt-z-max", type=float, default=45.0, help="Maximum Z/yaw rotation in degrees.")
     parser.add_argument("--tilt-z-count", type=int, default=3, help="Number of samples along the Z rotation range.")
+    parser.add_argument(
+        "--max-rot-step-deg",
+        type=float,
+        default=20.0,
+        help="Maximum rotation per intermediate step (degrees).",
+    )
     parser.add_argument("--move-duration", type=float, default=10.0, help="Blend duration when updating IK targets.")
     parser.add_argument("--settle-time", type=float, default=0.5, help="Extra delay after settling before sampling (seconds).")
     parser.add_argument("--settle-tolerance-deg", type=float, default=2.0, help="Orientation error allowed before sampling.")
@@ -341,6 +379,7 @@ def main() -> None:
         tilt_z_min=args.tilt_z_min,
         tilt_z_max=args.tilt_z_max,
         tilt_z_count=max(1, args.tilt_z_count),
+        max_rot_step_deg=max(1.0, args.max_rot_step_deg),
         move_duration=max(0.1, args.move_duration),
         settle_time=max(0.0, args.settle_time),
         sample_duration=max(0.1, args.sample_duration),

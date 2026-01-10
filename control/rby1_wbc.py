@@ -86,6 +86,12 @@ class RBY1WBC:
         self.address = require("address")
         self.model_path = PROJECT_ROOT + str(require("model_path"))
         self.init_position = require("init_position")
+        use_legacy_init = bool(self.config.get("use_legacy_init", False))
+        if use_legacy_init:
+            legacy_init = self.config.get("legacy_init_position")
+            if not isinstance(legacy_init, dict):
+                raise ValueError("legacy_init_position must be a mapping when use_legacy_init is true.")
+            self.init_position = legacy_init
         self.state_frequency_hz = require("state_frequency_hz")
         self.trajectory_frequency_hz = require("trajectory_frequency_hz")
         self.ik_frequency_hz = require("ik_frequency_hz")

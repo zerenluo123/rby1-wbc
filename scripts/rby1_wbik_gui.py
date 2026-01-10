@@ -21,6 +21,11 @@ def main():
     data = mujoco.MjData(model)
     ik = RBY1WholeBodyIK()
 
+    joint_entries = []
+    for j in range(model.njnt):
+        if model.jnt_type[j] == mujoco.mjtJoint.mjJNT_HINGE:
+            joint_entries.append((model.joint(j).name, model.jnt_qposadr[j]))
+
     # Helper: FK using viewer model
     def site_pose(site_name: str, qpos: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         data.qpos[:] = qpos
@@ -118,6 +123,8 @@ def main():
         mujoco.mjv_defaultFreeCamera(model, viewer.cam)
 
         rate = RateLimiter(frequency=30.0, warn=False)
+        last_print_time = 0.0
+        print_period_s = 0.5
 
         while viewer.is_running():
             # Read targets from mocap spheres (drag with mouse in viewer)
@@ -168,6 +175,14 @@ def main():
 
             # Apply solution to viewer
             data.qpos[:] = sol_qpos
+            now = time.perf_counter()
+            if now - last_print_time >= print_period_s:
+                last_print_time = now
+                joint_text = ", ".join(
+                    f"{name}={sol_qpos[adr]:.3f}rad"
+                    for name, adr in joint_entries
+                )
+                print(f"[wbik_gui] joints: {joint_text}")
             mujoco.mj_forward(model, data)
             mujoco.mj_camlight(model, data)
 

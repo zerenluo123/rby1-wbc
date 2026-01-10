@@ -304,85 +304,85 @@ class Insta360Calibrated:
         print("stopped")
 
 
-# if __name__ == "__main__":
-#     # ---- Choose ONE camera key here and calibrate it ----
-#     # examples:
-#     #   camera_head_main_rgb
-#     #   camera_head_main_right_rgb
-#     camera_key = "camera_head_main_right_rgb"
-
-#     camera = AravisSingleCamera(camera_key=camera_key)
-
-#     cam = Insta360Calibrated(
-#         camera=camera,
-#         camera_resolution=None,  # keep native stream size (e.g., 480x300); set (W,H) if you want resize
-#         latency=0.0,
-#         image_save_path=f"./images_{camera_key}",
-#         camera_calibration_save_path=f"./camera_calibration_{camera_key}",
-#     )
-
-#     # IMPORTANT: chessboard_size is INNER corners (cols, rows)
-#     cam.calibrate_camera(chessboard_size=(8, 5), square_size=0.025, num_images=40)
-
-#     cam.stop_streaming()
-
 if __name__ == "__main__":
-    # Pick which camera to view
-    camera_key = "camera_head_main_right_rgb"
-    calibration_file = f"./camera_calibration_{camera_key}/fisheye_calibration.json"
+    # ---- Choose ONE camera key here and calibrate it ----
+    # examples:
+    #   camera_head_main_rgb
+    #   camera_head_main_right_rgb
+    camera_key = "camera_head_main_rgb"
 
     camera = AravisSingleCamera(camera_key=camera_key)
 
     cam = Insta360Calibrated(
         camera=camera,
-        camera_resolution=None,  # keep native stream size
+        camera_resolution=None,  # keep native stream size (e.g., 480x300); set (W,H) if you want resize
         latency=0.0,
         image_save_path=f"./images_{camera_key}",
         camera_calibration_save_path=f"./camera_calibration_{camera_key}",
     )
 
-    # 1) Load calibration
-    cam.load_calibration(calibration_file)
+    # IMPORTANT: chessboard_size is INNER corners (cols, rows)
+    cam.calibrate_camera(chessboard_size=(8, 5), square_size=0.025, num_images=40)
 
-    # 2) Start streaming loop
-    cam.start_streaming()
-    cv2.namedWindow("raw_vs_undistorted", cv2.WINDOW_NORMAL)
+    cam.stop_streaming()
 
-    try:
-        while True:
-            frame_data = cam.get_camera_frame()
-            if frame_data is None:
-                continue
+# if __name__ == "__main__":
+#     # Pick which camera to view
+#     camera_key = "camera_head_main_right_rgb"
+#     calibration_file = f"./camera_calibration_{camera_key}/fisheye_calibration.json"
 
-            raw = frame_data.front_rgb
-            und = cam.undistort_frame(raw)
+#     camera = AravisSingleCamera(camera_key=camera_key)
 
-            # Make a side-by-side view (match heights if needed)
-            if raw.shape[:2] != und.shape[:2]:
-                und = cv2.resize(und, (raw.shape[1], raw.shape[0]))
+#     cam = Insta360Calibrated(
+#         camera=camera,
+#         camera_resolution=None,  # keep native stream size
+#         latency=0.0,
+#         image_save_path=f"./images_{camera_key}",
+#         camera_calibration_save_path=f"./camera_calibration_{camera_key}",
+#     )
 
-            vis = np.concatenate([raw, und], axis=1)
-            cv2.putText(vis, "RAW", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-            cv2.putText(vis, "UNDISTORTED", (raw.shape[1] + 10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+#     # 1) Load calibration
+#     cam.load_calibration(calibration_file)
 
-            cv2.imshow("raw_vs_undistorted", vis)
+#     # 2) Start streaming loop
+#     cam.start_streaming()
+#     cv2.namedWindow("raw_vs_undistorted", cv2.WINDOW_NORMAL)
 
-            key = cv2.waitKey(1) & 0xFF
-            if key in (27, ord("q")):
-                break
-            elif key == ord("s"):
-                # save a snapshot pair
-                ts = int(time.time() * 1000)
-                out_raw = os.path.join(cam.image_save_path, f"raw_{ts}.png")
-                out_und = os.path.join(cam.image_save_path, f"und_{ts}.png")
-                cv2.imwrite(out_raw, raw)
-                cv2.imwrite(out_und, und)
-                print(f"Saved: {out_raw}")
-                print(f"Saved: {out_und}")
+#     try:
+#         while True:
+#             frame_data = cam.get_camera_frame()
+#             if frame_data is None:
+#                 continue
 
-    finally:
-        cam.stop_streaming()
-        cv2.destroyAllWindows()
+#             raw = frame_data.front_rgb
+#             und = cam.undistort_frame(raw)
+
+#             # Make a side-by-side view (match heights if needed)
+#             if raw.shape[:2] != und.shape[:2]:
+#                 und = cv2.resize(und, (raw.shape[1], raw.shape[0]))
+
+#             vis = np.concatenate([raw, und], axis=1)
+#             cv2.putText(vis, "RAW", (10, 30),
+#                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+#             cv2.putText(vis, "UNDISTORTED", (raw.shape[1] + 10, 30),
+#                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+#             cv2.imshow("raw_vs_undistorted", vis)
+
+#             key = cv2.waitKey(1) & 0xFF
+#             if key in (27, ord("q")):
+#                 break
+#             elif key == ord("s"):
+#                 # save a snapshot pair
+#                 ts = int(time.time() * 1000)
+#                 out_raw = os.path.join(cam.image_save_path, f"raw_{ts}.png")
+#                 out_und = os.path.join(cam.image_save_path, f"und_{ts}.png")
+#                 cv2.imwrite(out_raw, raw)
+#                 cv2.imwrite(out_und, und)
+#                 print(f"Saved: {out_raw}")
+#                 print(f"Saved: {out_und}")
+
+#     finally:
+#         cam.stop_streaming()
+#         cv2.destroyAllWindows()
 
