@@ -1,9 +1,16 @@
+# camera_map:
+#   camera_head_main_rgb: "FLIR-Blackfly S BFS-PGE-50S5C-25260985"
+#   camera_head_main_right_rgb: "FLIR-Blackfly S BFS-PGE-50S5C-25272263"
+#   camera_head_ultrawide_rgb: "FLIR-Blackfly S BFS-PGE-50S5C-25260989"
+#   camera_left_main_rgb: "FLIR-Blackfly S BFS-PGE-23S3C-24260091"
+#   camera_right_main_rgb: "FLIR-Blackfly S BFS-PGE-23S3C-24260092"
+
+# after swapping the head and wrist cameras
 camera_map:
-  camera_head_main_rgb: "FLIR-Blackfly S BFS-PGE-50S5C-25260985"
-  camera_head_main_right_rgb: "FLIR-Blackfly S BFS-PGE-50S5C-25272263"
-  camera_head_ultrawide_rgb: "FLIR-Blackfly S BFS-PGE-50S5C-25260989"
-  camera_left_main_rgb: "FLIR-Blackfly S BFS-PGE-23S3C-24260091"
-  camera_right_main_rgb: "FLIR-Blackfly S BFS-PGE-23S3C-24260092"
+  camera_left_main_rgb: "FLIR-Blackfly S BFS-PGE-50S5C-25260985"
+  camera_right_main_rgb: "FLIR-Blackfly S BFS-PGE-50S5C-25272263"
+  camera_head_main_rgb: "FLIR-Blackfly S BFS-PGE-23S3C-24260091"
+  camera_head_main_right_rgb: "FLIR-Blackfly S BFS-PGE-23S3C-24260092"
 
 frame_rate: 30.0
 binning: [4, 4]

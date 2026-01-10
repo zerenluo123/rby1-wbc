@@ -1,33 +1,22 @@
 # Robot gRPC address
-# address: "192.168.30.1:50051"
-address: "localhost:50051"
+address: "192.168.30.1:50051"
+# address: "localhost:50051"
 
 # Robot configuration parameters
 # model_path: "/model/rby1/rby1_mocap.xml"
 model_path: "/model/rby1/rby1.xml"
 init_position:
-  # torso: [0.0, 0.7854, -1.5708, 0.7854, 0.0, 0.0]
+  torso: [0.0, 0.7854, -1.5708, 0.7854, 0.0, 0.0]
   # torso: [0.0, 0.9162979, -1.8326, 0.9162979, 0.0, 0.0]
   # left_arm: [0.0, 0.0873, 0.0, -2.0944, 0.0, 0.9599, -1.5708]
-  # left_arm: [0.0, 0.0873, 0.0, -2.0944, 0.0, 1.0472, -1.5708]
+  left_arm: [0.0, 0.0873, 0.0, -2.0944, 0.0, 1.0472, -1.5708]
   # left_arm: [0.0, 0.0873, 0.0, -2.00713, 0.0, 0.698132, -1.5708]
   # right_arm: [0.0, -0.0873, 0.0, -2.0944, 0.0, 0.9599, 1.5708]
-  # right_arm: [0.0, -0.0873, 0.0, -2.0944, 0.0, 1.0472, 1.5708]
+  right_arm: [0.0, -0.0873, 0.0, -2.0944, 0.0, 1.0472, 1.5708]
   # right_arm: [0.0, -0.0873, 0.0, -2.00713, 0.0, 0.698132, 1.5708]
   # head: [0.0, 0.6109]
-  # head: [0.0, 0.698132]
+  head: [0.0, 0.523599]
   grippers: [0.08, 0.08]
-  torso: [0.0, 0.7854, -0.96, 0.1746, 0.0, 0.0]
-  right_arm:  [0.96, -0.7, 0.096, -2.4, 0.23, 0.187, 0.8]
-  left_arm: [0.96, 0.7, -0.096, -2.4, -0.23, 0.187, -0.8]
-  head: [0.0, 0.872665]
-
-# init_position:
-#   torso: [0.0, 0.558505, -1.29154, 0.733038, 0.0, 0.0]
-#   left_arm: [0.959931, 0.523599, -0.174533, -2.19911, -0.349066, 0, -0.872665]
-#   right_arm: [0.959931, -0.523599, 0.174533, -2.19911, 0.349066, 0, 0.872665]
-#   head: [0.0, 0.872665]
-#   grippers: [0.08, 0.08]
 
 # Controller parameters
 state_frequency_hz: 100.0
@@ -59,7 +48,7 @@ base_velocity_gain: [0.06, 0.06, 0.1]
 
 # Base reset parameters
 base_reset:
-  enabled: false
+  enabled: true
   pos_tolerance_m: 0.01
   yaw_tolerance_deg: 0.1
   max_linear_speed: 0.05

@@ -28,11 +28,11 @@ from control.rby1_policy import RBY1PolicyRobot, ScheduledAction
 
 DEFAULT_CAMERA_LATENCIES = {
     # Wrist cameras (left/right)
-    "camera_left_main_rgb": 0.06,
-    "camera_right_main_rgb": 0.06,
+    "camera_left_main_rgb": 0.1,
+    "camera_right_main_rgb": 0.1,
     # Head rig (main, right, ultrawide)
-    "camera_head_main_rgb": 0.1,
-    "camera_head_main_right_rgb": 0.1,
+    "camera_head_main_rgb": 0.06,
+    "camera_head_main_right_rgb": 0.06,
     "camera_head_ultrawide_rgb": 0.1,
 }
 
