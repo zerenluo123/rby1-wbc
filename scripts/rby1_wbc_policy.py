@@ -202,6 +202,7 @@ def build_scheduled_actions(
     timestamps: np.ndarray,
     fallback_dt: float,
     now: float,
+    gripper_width_offset: float,
 ) -> List[ScheduledAction]:
     if not actions_tf:
         return []
@@ -273,13 +274,17 @@ def build_scheduled_actions(
                 width_series = np.asarray(actions_tf["gripper_left_gripper_width"], dtype=float)
                 if idx < width_series.shape[0]:
                     payload["gripper_left_gripper_width"] = np.clip(
-                        float(width_series[idx].reshape(-1)[0]) - 0.003, GRIPPER_WIDTH_LIMITS[0], GRIPPER_WIDTH_LIMITS[1]
+                        float(width_series[idx].reshape(-1)[0]) - gripper_width_offset,
+                        GRIPPER_WIDTH_LIMITS[0],
+                        GRIPPER_WIDTH_LIMITS[1],
                     )
             if "gripper_right_gripper_width" in actions_tf:
                 width_series = np.asarray(actions_tf["gripper_right_gripper_width"], dtype=float)
                 if idx < width_series.shape[0]:
                     payload["gripper_right_gripper_width"] = np.clip(
-                        float(width_series[idx].reshape(-1)[0]) - 0.003, GRIPPER_WIDTH_LIMITS[0], GRIPPER_WIDTH_LIMITS[1]
+                        float(width_series[idx].reshape(-1)[0]) - gripper_width_offset,
+                        GRIPPER_WIDTH_LIMITS[0],
+                        GRIPPER_WIDTH_LIMITS[1],
                     )
 
             if not payload:
@@ -715,7 +720,7 @@ def main() -> None:
     parser.add_argument(
         "--gripper-execution-latency",
         type=float,
-        default=0.05,
+        default=0.1,    # todo: maybe need to tune
         help="Measured execution latency (seconds) for the gripper hardware.",
     )
     parser.add_argument(
@@ -756,7 +761,13 @@ def main() -> None:
     parser.add_argument("--sim-only", action="store_true", help="Run without the realtime controller and preview actions in Mujoco.")
     parser.add_argument("--sim-model", default=None, help="Optional custom MJCF path for --sim-only mode.")
     parser.add_argument("--sim-viewer", action="store_true", help="Open a Mujoco viewer when using --sim-only.")
-    parser.add_argument("--gripper-width-offset", type=float, default=0.0, help="Additive offset applied to observed gripper widths (subtracted from executed commands).")
+    parser.add_argument("--gripper-width-offset", type=float, default=0.0, help="Additive offset applied to observed gripper widths.")
+    parser.add_argument(
+        "--gripper-width-command-offset",
+        type=float,
+        default=0.005,
+        help="Offset subtracted from commanded gripper widths before clipping.",
+    )
     parser.add_argument(
         "--plot-tracking",
         action="store_true",
@@ -1012,6 +1023,7 @@ def main() -> None:
                                 timestamps=action_timestamps,
                                 fallback_dt=control_dt,
                                 now=time.monotonic(),
+                                gripper_width_offset=args.gripper_width_command_offset,
                             )
                             tracking_policy_raw.extend(
                                 [(a.timestamp, a.payload) for a in scheduled_actions_raw]
@@ -1027,6 +1039,7 @@ def main() -> None:
                     timestamps=action_timestamps,
                     fallback_dt=control_dt,
                     now=time.monotonic(),
+                    gripper_width_offset=args.gripper_width_command_offset,
                 )
                 if scheduled_actions:
                     if args.debug_actions and debug_request_queue is not None:

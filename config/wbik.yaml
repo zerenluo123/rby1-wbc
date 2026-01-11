@@ -22,19 +22,23 @@ nominal_posture_cost_head: 0.0
 current_posture_cost_main: 50
 current_posture_cost_head: 0.0
 com_over_base_pos_cost: 100000.0
-com_over_base_xy_bounds: [0.05, 0.05]  # meters (|torso5_xy - base_xy| <= bound, in base frame)
+com_over_base_xy_bounds: [0.08, 0.08]  # meters (|torso5_xy - base_xy| <= bound, in base frame)
 base_ground_position_cost: [50.0, 50.0, 100000.0]
 base_ground_orientation_cost: [100000.0, 100000.0, 50.0]
 
 # Nominal/reference joint angles (radians)
 nominal_torso_rad: [0.0, 0.7854, -0.96, 0.1746, 0.0, 0.0]
+# nominal_torso_rad: [0.0, 0.7854, -0.96, 0.261799, 0.0, 0.0]
 # nominal_right_arm_rad:  [0.96, -0.7, 0.096, -2.4, 0.23, 0.187, 0.8]
 # nominal_right_arm_rad: [0.87, -0.594, 0.167, -2.18, 0.285, 0.056, 0.849]
-nominal_right_arm_rad: [0.89, -0.668, 0.086, -2.217, 0.229, 0.079, 0.791]
+# nominal_right_arm_rad: [0.915, -0.562, 0.196, -2.33, 0.313, 0.184, 0.866]
+nominal_right_arm_rad: [0.892, -0.514, 0.201, -2.298, 0.329, 0.193, 0.874]
 # nominal_left_arm_rad: [0.96, 0.7, -0.096, -2.4, -0.23, 0.187, -0.8]
 # nominal_left_arm_rad: [0.87, 0.594, -0.167, -2.18, -0.285, 0.056, -0.849]
-nominal_left_arm_rad: [0.89, 0.668, -0.086, -2.217, -0.229, 0.079, -0.791]
+# nominal_left_arm_rad: [0.915, 0.562, -0.196, -2.33, -0.313, 0.184, -0.866]
+nominal_left_arm_rad: [0.892, 0.514, -0.201, -2.298, -0.329, 0.193, -0.874]
 nominal_head_rad: [0.0, 0.872665]
+# nominal_head_rad: [0.0, 1.0472]
 
 # nominal_torso_rad: [0.0, 0.558505, -1.29154, 0.733038, 0.0, 0.0]
 # nominal_right_arm_rad: [0.959931, -0.523599, 0.174533, -2.19911, 0.349066, 0, 0.872665]
@@ -56,8 +60,8 @@ joint_velocity_limits:
   torso_1: 2.0944 # for torso joint movement
   # torso_2: 0.0  
   torso_2: 3.1416  # for torso joint movement
-  # torso_3: 3.1416   # for torso joint movement
-  torso_3: 0.0
+  torso_3: 3.1416   # for torso joint movement
+  # torso_3: 0.0
   torso_4: 0.0
   torso_5: 0.0
   left_arm_0: 3.1416

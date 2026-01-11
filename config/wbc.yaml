@@ -8,13 +8,17 @@ model_path: "/model/rby1/rby1.xml"
 init_position:
   grippers: [0.08, 0.08]
   torso: [0.0, 0.7854, -0.96, 0.1746, 0.0, 0.0]
+  # torso: [0.0, 0.7854, -0.96, 0.261799, 0.0, 0.0]
   # right_arm: [0.96, -0.7, 0.096, -2.4, 0.23, 0.187, 0.8]
   # right_arm: [0.87, -0.594, 0.167, -2.18, 0.285, 0.056, 0.849]
-  right_arm: [0.89, -0.668, 0.086, -2.217, 0.229, 0.079, 0.791]
+  # right_arm: [0.915, -0.562, 0.196, -2.33, 0.313, 0.184, 0.866]
+  right_arm: [0.892, -0.514, 0.201, -2.298, 0.329, 0.193, 0.874]
   # left_arm: [0.96, 0.7, -0.096, -2.4, -0.23, 0.187, -0.8]
   # left_arm: [0.87, 0.594, -0.167, -2.18, -0.285, 0.056, -0.849]
-  left_arm: [0.89, 0.668, -0.086, -2.217, -0.229, 0.079, -0.791]
+  # left_arm: [0.915, 0.562, -0.196, -2.33, -0.313, 0.184, -0.866]
+  left_arm: [0.892, 0.514, -0.201, -2.298, -0.329, 0.193, -0.874]
   head: [0.0, 0.872665]
+  # head: [0.0, 1.0472]
 
 # When true, override init_position with legacy_init_position below.
 use_legacy_init: false
@@ -58,7 +62,7 @@ gripper:
 # Base control gains
 base_error_gain: [0, 0, 0]  # TRI's IK runs at 500hz and ours at 100hz, so scale the gains by 5x
 # base_velocity_gain: [0.1, 0.1, 0.1] # Might need to tune this more
-base_velocity_gain: [0.06, 0.06, 0.1]
+base_velocity_gain: [0.08, 0.08, 0.12]
 
 # Base reset parameters
 base_reset:
@@ -76,11 +80,11 @@ init_position_max_step_delta: 0.005
 # Incremental safety limits (commands farther than these from current pose are rejected)
 incremental_safety:
   enabled: true
-  max_translation_m: 0.2      # maximum linear delta per update
+  max_translation_m: 0.35      # maximum linear delta per update
   max_rotation_deg: 40.0       # maximum angular delta per update
 
 admittance:
-  enabled: true
+  enabled: false
   desired_wrench:
     left: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     right: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
