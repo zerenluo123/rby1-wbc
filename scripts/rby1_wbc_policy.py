@@ -57,6 +57,14 @@ class DebugImageRequest:
     batch_tag: str
     bgr_to_rgb: bool
 
+
+@dataclass
+class DebugEnvObsRequest:
+    env_obs: Dict[str, np.ndarray]
+    output_dir: Path
+    batch_tag: str
+
+
 OBS_TF_KEYS = {
     "left": "gripper_left_tf",
     "right": "gripper_right_tf",
@@ -246,6 +254,8 @@ def build_scheduled_actions(
                 payload_key = obs_key
                 if effector == "head" and "camera_head_lookatpoint" in actions_tf:
                     payload_key = "camera_head_lookatpoint"
+                elif effector == "head" and "head_tf" in actions_tf:
+                    payload_key = "gripper_head_tf"
                 if payload_key not in actions_tf:
                     continue
                 series = np.asarray(actions_tf[payload_key])
@@ -594,6 +604,116 @@ def _save_debug_images(request: DebugImageRequest) -> None:
                 print(f"[debug] Failed to write image '{output_path}'")
 
 
+def _save_debug_env_obs(request: DebugEnvObsRequest) -> None:
+    request.output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = request.output_dir / f"{request.batch_tag}_env_obs.npz"
+    try:
+        np.savez_compressed(output_path, **request.env_obs)
+    except Exception as exc:  # pragma: no cover - best effort saver
+        print(f"[debug] Failed to write env obs {output_path}: {exc}")
+
+
+def _start_debug_env_obs_worker(
+    max_queue: int = 4,
+) -> tuple["queue.Queue[Optional[DebugEnvObsRequest]]", threading.Thread, threading.Event]:
+    env_queue: "queue.Queue[Optional[DebugEnvObsRequest]]" = queue.Queue(maxsize=max_queue)
+    stop_event = threading.Event()
+
+    def _worker() -> None:
+        while True:
+            if stop_event.is_set() and env_queue.empty():
+                break
+            try:
+                request = env_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if request is None:
+                if stop_event.is_set():
+                    break
+                continue
+            try:
+                _save_debug_env_obs(request)
+            except Exception as exc:  # pragma: no cover - best effort saver
+                print(f"[debug] Failed to save env obs: {exc}")
+
+    thread = threading.Thread(target=_worker, name="debug-env-obs-writer", daemon=True)
+    thread.start()
+    return env_queue, thread, stop_event
+
+
+def _ensure_even(value: int) -> int:
+    return value if value % 2 == 0 else value + 1
+
+
+def _start_debug_video_logger(
+    camera_streamer: AravisCameraStreamer,
+    output_dir: Path,
+    fps: Optional[float],
+    stop_event: threading.Event,
+    poll_period: float = 0.01,
+) -> threading.Thread:
+    try:
+        import cv2  # type: ignore
+    except Exception as exc:  # pragma: no cover - optional dependency
+        print(f"[debug] Unable to save videos (cv2 missing): {exc}")
+        return threading.Thread(target=lambda: None, name="debug-video-writer", daemon=True)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    video_fps = float(fps) if fps is not None else float(getattr(camera_streamer, "_frame_rate", 30.0))
+    last_timestamps: Dict[str, float] = {}
+    writers: Dict[str, cv2.VideoWriter] = {}
+
+    def _writer_for(key: str, frame: np.ndarray) -> cv2.VideoWriter:
+        if key in writers:
+            return writers[key]
+        h, w = frame.shape[:2]
+        w_even = _ensure_even(w)
+        h_even = _ensure_even(h)
+        path = output_dir / f"{_sanitize_camera_key(key)}.mp4"
+        writer = cv2.VideoWriter(
+            str(path),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            video_fps,
+            (w_even, h_even),
+        )
+        writers[key] = writer
+        return writer
+
+    def _normalize_frame(frame: np.ndarray) -> np.ndarray:
+        h, w = frame.shape[:2]
+        w_even = _ensure_even(w)
+        h_even = _ensure_even(h)
+        if (h, w) == (h_even, w_even):
+            return frame
+        canvas = np.zeros((h_even, w_even, 3), dtype=frame.dtype)
+        canvas[:h, :w] = frame
+        return canvas
+
+    def _worker() -> None:
+        while not stop_event.is_set():
+            frames_by_cam = camera_streamer.get_frames_since(last_timestamps)
+            wrote_any = False
+            for key, frames in frames_by_cam.items():
+                if not frames:
+                    continue
+                writer = _writer_for(key, frames[0].image)
+                for frame in frames:
+                    writer.write(_normalize_frame(frame.image))
+                    last_timestamps[key] = frame.timestamp
+                wrote_any = True
+            if not wrote_any:
+                stop_event.wait(timeout=poll_period)
+        for writer in writers.values():
+            try:
+                writer.release()
+            except Exception:
+                pass
+
+    thread = threading.Thread(target=_worker, name="debug-video-writer", daemon=True)
+    thread.start()
+    return thread
+
+
 def _start_debug_image_worker(
     bgr_to_rgb: bool = True,
     max_queue: int = 4,
@@ -753,9 +873,20 @@ def main() -> None:
         help="Save camera images for each action batch (independent of --debug-actions).",
     )
     parser.add_argument(
+        "--debug-save-video",
+        action="store_true",
+        help="Save continuous camera videos without blocking policy inference.",
+    )
+    parser.add_argument(
+        "--debug-video-fps",
+        type=float,
+        default=None,
+        help="FPS for debug videos (default: camera frame rate).",
+    )
+    parser.add_argument(
         "--debug-video-dir",
         default="log/debug_action_videos",
-        help="Output directory for debug action images.",
+        help="Output directory for debug action images/videos.",
     )
     parser.add_argument("--align-first-action", action="store_true", help="Rigidly align each action chunk to the current robot pose before execution.")
     parser.add_argument("--sim-only", action="store_true", help="Run without the realtime controller and preview actions in Mujoco.")
@@ -796,8 +927,12 @@ def main() -> None:
     debug_image_queue: Optional["queue.Queue[Optional[DebugImageRequest]]"] = None
     debug_image_thread: Optional[threading.Thread] = None
     debug_image_stop: Optional[threading.Event] = None
+    debug_env_obs_queue: Optional["queue.Queue[Optional[DebugEnvObsRequest]]"] = None
+    debug_env_obs_thread: Optional[threading.Thread] = None
+    debug_env_obs_stop: Optional[threading.Event] = None
+    debug_video_thread: Optional[threading.Thread] = None
     debug_image_counter = [0]
-    debug_image_root: Optional[Path] = None
+    debug_media_root: Optional[Path] = None
     tracking_cmd: List[Tuple[float, Dict[str, np.ndarray]]] = []
     tracking_policy_raw: List[Tuple[float, Dict[str, np.ndarray]]] = []
     tracking_exec: List[Tuple[float, Dict[str, np.ndarray]]] = []
@@ -849,11 +984,23 @@ def main() -> None:
         elif args.sim_only and not args.state_only:
             print("[camera] Skipping camera streamer in simulation mode.")
 
+        if args.debug_save_images or args.debug_save_video:
+            debug_media_root = Path(args.debug_video_dir) / time.strftime("%Y%m%d_%H%M%S")
         if args.debug_save_images:
-            debug_image_root = Path(args.debug_video_dir) / time.strftime("%Y%m%d_%H%M%S")
             debug_image_queue, debug_image_thread, debug_image_stop = _start_debug_image_worker(
                 bgr_to_rgb=True,
             )
+            debug_env_obs_queue, debug_env_obs_thread, debug_env_obs_stop = _start_debug_env_obs_worker()
+        if args.debug_save_video and camera_streamer is not None:
+            output_dir = debug_media_root if debug_media_root is not None else Path(args.debug_video_dir)
+            debug_video_thread = _start_debug_video_logger(
+                camera_streamer=camera_streamer,
+                output_dir=output_dir,
+                fps=args.debug_video_fps,
+                stop_event=stop_event,
+            )
+        elif args.debug_save_video:
+            print("[debug] Video logging requested but camera streamer is unavailable.")
 
         policy_client = PolicyClient(
             ip=args.policy_ip,
@@ -922,6 +1069,9 @@ def main() -> None:
 
                 policy_robot_obs = _convert_robot_observations(robot_obs_model, MODEL_TO_TCP_FRAME)
                 policy_robot_obs = _offset_gripper_obs(policy_robot_obs, args.gripper_width_offset)
+                if "head_tf" in policy_robot_obs and "gripper_head_tf" not in policy_robot_obs:
+                    # Alias head_tf for policies expecting gripper_head_tf.
+                    policy_robot_obs["gripper_head_tf"] = np.asarray(policy_robot_obs["head_tf"]).copy()
                 obs_dict = {k: v for k, v in policy_robot_obs.items() if k != "timestamp"}
                 if camera_obs is not None:
                     for key, value in camera_obs.items():
@@ -1075,15 +1225,27 @@ def main() -> None:
                     ):
                         debug_image_counter[0] += 1
                         stamp = time.strftime("%Y%m%d_%H%M%S")
-                        output_dir = debug_image_root if debug_image_root is not None else Path(args.debug_video_dir)
+                        output_dir = debug_media_root if debug_media_root is not None else Path(args.debug_video_dir)
+                        batch_tag = f"{stamp}_{debug_image_counter[0]:03d}"
                         debug_image_queue.put(
                             DebugImageRequest(
                                 image_obs=debug_images,
                                 output_dir=output_dir,
-                                batch_tag=f"{stamp}_{debug_image_counter[0]:03d}",
+                                batch_tag=batch_tag,
                                 bgr_to_rgb=True,
                             )
                         )
+                        if debug_env_obs_queue is not None and not debug_env_obs_queue.full():
+                            debug_env_obs = {k: np.asarray(v).copy() for k, v in obs_dict.items()}
+                            debug_env_obs_queue.put(
+                                DebugEnvObsRequest(
+                                    env_obs=debug_env_obs,
+                                    output_dir=output_dir,
+                                    batch_tag=batch_tag,
+                                )
+                            )
+                        elif debug_env_obs_queue is not None:
+                            print("[debug] Env obs queue full; dropping env obs batch.")
                     elif debug_image_queue is not None and debug_images is not None:
                         print("[debug] Image queue full; dropping debug image batch.")
 
@@ -1138,6 +1300,13 @@ def main() -> None:
             debug_image_queue.put(None)
         if debug_image_thread is not None:
             debug_image_thread.join(timeout=1.0)
+        if debug_env_obs_stop is not None and debug_env_obs_queue is not None:
+            debug_env_obs_stop.set()
+            debug_env_obs_queue.put(None)
+        if debug_env_obs_thread is not None:
+            debug_env_obs_thread.join(timeout=1.0)
+        if debug_video_thread is not None:
+            debug_video_thread.join(timeout=1.0)
         if tracking_state_thread is not None:
             tracking_state_thread.join(timeout=1.0)
         if camera_streamer is not None:

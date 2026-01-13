@@ -116,6 +116,18 @@ class RBY1WBC:
         self.max_incremental_translation = float(incremental_cfg.get("max_translation_m", 0.05))
         self.max_incremental_rotation_deg = float(incremental_cfg.get("max_rotation_deg", 20.0))
 
+        wrench_safety_cfg = self.config.get("ee_wrench_safety", {})
+        self.ee_wrench_safety_enabled = bool(wrench_safety_cfg.get("enabled", False))
+        self.ee_wrench_safety_max_force = float(wrench_safety_cfg.get("max_force_N", 80.0))
+        self.ee_wrench_safety_max_torque = float(wrench_safety_cfg.get("max_torque_Nm", 6.0))
+        self.ee_wrench_safety_require_valid = bool(wrench_safety_cfg.get("require_valid", True))
+        self.ee_wrench_safety_use_calibrated = bool(
+            wrench_safety_cfg.get("use_calibrated_wrench", False)
+        )
+        self._wrench_safety_tripped = False
+        self._wrench_safety_reason: Optional[str] = None
+        self._wrench_safety_calibrator: Optional[FTCalibrator] = None
+
         head_control_cfg = self.config.get("head_control", {})
         self._head_control_mode = str(head_control_cfg.get("mode", "ik")).lower()
 
@@ -136,6 +148,19 @@ class RBY1WBC:
             self._ft_calibrator = FTCalibrator()
         else:
             self._ft_calibrator = None
+        if self.ee_wrench_safety_use_calibrated:
+            if self._ft_calibrator is not None:
+                self._wrench_safety_calibrator = self._ft_calibrator
+            else:
+                try:
+                    self._wrench_safety_calibrator = FTCalibrator()
+                except Exception as exc:
+                    self._wrench_safety_calibrator = None
+                    self.ee_wrench_safety_use_calibrated = False
+                    print(
+                        "[wbc] wrench safety: failed to initialize FTCalibrator; "
+                        f"using raw wrenches ({exc})."
+                    )
 
         # Initialize Controller loops
         self.ik_rate = RateLimiter(frequency=self.ik_frequency_hz, warn=False)
@@ -621,6 +646,20 @@ class RBY1WBC:
             if current_qpos is None or left_pos is None or right_pos is None:
                 self.ik_rate.sleep()
                 continue
+
+            if self.ee_wrench_safety_enabled:
+                if self._wrench_safety_tripped:
+                    self._hold_current_pose(current_qpos)
+                    self.ik_rate.sleep()
+                    continue
+                trip_msg = self._check_wrench_safety(snapshot, current_qpos)
+                if trip_msg is not None:
+                    self._wrench_safety_tripped = True
+                    self._wrench_safety_reason = trip_msg
+                    print(f"[wbc] wrench safety tripped: {trip_msg}. Freezing outputs.")
+                    self._hold_current_pose(current_qpos)
+                    self.ik_rate.sleep()
+                    continue
             
             if self.admittance_enabled:
                 if not self._admittance_initialized:
@@ -699,6 +738,68 @@ class RBY1WBC:
                 print(f"[wbc] command error: {exc}")
 
             self.ik_rate.sleep()
+
+    def _hold_current_pose(self, current_qpos: Optional[np.ndarray]) -> None:
+        if current_qpos is None:
+            return
+        try:
+            body_targets = self._compute_body_commands(current_qpos)
+            self.controller.set_body_position_targets(body_targets.tolist())
+            self.controller.set_base_twist_command(np.zeros(3, dtype=float))
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"[wbc] safety hold error: {exc}")
+
+    def _check_wrench_safety(
+        self,
+        snapshot: Optional[RobotSnapshot],
+        current_qpos: Optional[np.ndarray],
+    ) -> Optional[str]:
+        if not self.ee_wrench_safety_enabled:
+            return None
+        if snapshot is None or not snapshot.is_valid:
+            return None
+
+        left_valid = bool(snapshot.left_ft_valid)
+        right_valid = bool(snapshot.right_ft_valid)
+        left_wrench = np.asarray(snapshot.left_ee_wrench, dtype=float)
+        right_wrench = np.asarray(snapshot.right_ee_wrench, dtype=float)
+
+        if (
+            self.ee_wrench_safety_use_calibrated
+            and self._wrench_safety_calibrator is not None
+            and current_qpos is not None
+        ):
+            left_pose_vec, right_pose_vec = self._compute_end_effector_world_pose(current_qpos)
+            try:
+                left_wrench, right_wrench = self._wrench_safety_calibrator.calibrate(
+                    left_wrench,
+                    right_wrench,
+                    left_pose_vec,
+                    right_pose_vec,
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                print(f"[wbc] wrench safety: calibration failed ({exc}); using raw wrenches.")
+
+        def _check_arm(name: str, wrench: np.ndarray, valid: bool) -> Optional[str]:
+            if self.ee_wrench_safety_require_valid and not valid:
+                return None
+            force_norm = float(np.linalg.norm(wrench[:3]))
+            torque_norm = float(np.linalg.norm(wrench[3:]))
+            if (
+                force_norm > self.ee_wrench_safety_max_force
+                or torque_norm > self.ee_wrench_safety_max_torque
+            ):
+                return (
+                    f"{name} ft over limit: force={force_norm:.2f}N "
+                    f"torque={torque_norm:.2f}Nm (limits {self.ee_wrench_safety_max_force}N "
+                    f"{self.ee_wrench_safety_max_torque}Nm)"
+                )
+            return None
+
+        left_msg = _check_arm("left", left_wrench, left_valid)
+        if left_msg is not None:
+            return left_msg
+        return _check_arm("right", right_wrench, right_valid)
 
     def _compute_head_lookat_angles(
         self,

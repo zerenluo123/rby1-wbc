@@ -346,6 +346,27 @@ class AravisCameraStreamer:
             time.sleep(0.01)
         raise TimeoutError("Timed out waiting for camera frames")
 
+    def get_frames_since(
+        self,
+        last_timestamps: Optional[Mapping[str, float]] = None,
+    ) -> Dict[str, List[CameraFrame]]:
+        """Return frames newer than the provided timestamps.
+
+        The returned dict maps camera keys to lists of CameraFrame objects.
+        This does not mutate internal buffers.
+        """
+
+        with self._buffers_lock:
+            buffers_copy = {k: list(v) for k, v in self._buffers.items()}
+
+        frames_out: Dict[str, List[CameraFrame]] = {}
+        for key, frames in buffers_copy.items():
+            cutoff = -float("inf")
+            if last_timestamps is not None:
+                cutoff = float(last_timestamps.get(key, cutoff))
+            frames_out[key] = [frame for frame in frames if frame.timestamp > cutoff]
+        return frames_out
+
     def get_observation_window(
         self,
         horizon: int,

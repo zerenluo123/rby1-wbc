@@ -83,6 +83,14 @@ incremental_safety:
   max_translation_m: 0.35      # maximum linear delta per update
   max_rotation_deg: 40.0       # maximum angular delta per update
 
+# End-effector force/torque safety guard (latches and freezes outputs)
+ee_wrench_safety:
+  enabled: true
+  max_force_N: 80.0
+  max_torque_Nm: 8.0
+  require_valid: true
+  use_calibrated_wrench: true
+
 admittance:
   enabled: false
   desired_wrench:
