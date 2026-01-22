@@ -101,6 +101,11 @@ class RBY1WBC:
         self.base_velocity_gain = np.asarray(require("base_velocity_gain"), dtype=float)
         self.low_pass_freq_hz = require("low_pass_freq_hz")
         self.init_position_max_step_delta = float(self.config.get("init_position_max_step_delta", 0.01))
+        joint_limit_cfg = self.config.get("joint_limit_warning", {})
+        self.joint_limit_warning_enabled = bool(joint_limit_cfg.get("enabled", True))
+        self.joint_limit_warning_margin_rad = float(
+            joint_limit_cfg.get("margin_rad", math.radians(5.0))
+        )
 
         base_reset_cfg = self.config.get("base_reset", {})
         self.base_reset_enabled = bool(base_reset_cfg.get("enabled", True))
@@ -428,6 +433,28 @@ class RBY1WBC:
             print(f"  {names[idx]}: {positions[idx]:.6f}")
         if len(positions) != len(names):
             print(f"[wbc] Note: {len(positions)} positions, {len(names)} names.")
+        if self.joint_limit_warning_enabled and self.joint_limit_warning_margin_rad > 0.0:
+            margin = self.joint_limit_warning_margin_rad
+            warnings = []
+            for idx in range(count):
+                name = names[idx]
+                joint_id = mujoco.mj_name2id(
+                    self.model, mujoco.mjtObj.mjOBJ_JOINT, name
+                )
+                if joint_id < 0 or int(self.model.jnt_limited[joint_id]) == 0:
+                    continue
+                low, high = self.model.jnt_range[joint_id]
+                pos = positions[idx]
+                if (pos - low) <= margin or (high - pos) <= margin:
+                    warnings.append((name, pos, low, high))
+            if warnings:
+                print(
+                    f"[wbc] Joint limit proximity warning (<= {margin:.4f} rad):"
+                )
+                for name, pos, low, high in warnings:
+                    print(
+                        f"  {name}: pos={pos:.6f} range=[{low:.6f}, {high:.6f}]"
+                    )
 
     def _print_gripper_poses(self, snapshot: Optional[RobotSnapshot]) -> None:
         qpos = self.snapshot_to_qpos(snapshot) if snapshot is not None else None

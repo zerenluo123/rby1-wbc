@@ -5,6 +5,7 @@ while maintaining stability and upright posture constraints.
 """
 import copy
 from pathlib import Path
+import math
 from typing import Optional, Tuple, Dict
 
 import mujoco
@@ -104,7 +105,20 @@ class RBY1WholeBodyIK:
         if not isinstance(legacy_cfg, dict):
             raise ValueError("IK config key 'legacy' must be a mapping when provided.")
 
-        self.nominal_posture_cost_main = float(require("nominal_posture_cost_main"))
+        if "nominal_posture_cost_torso" in cfg:
+            self.nominal_posture_cost_torso = float(cfg["nominal_posture_cost_torso"])
+        elif "nominal_posture_cost_main" in cfg:
+            self.nominal_posture_cost_torso = float(cfg["nominal_posture_cost_main"])
+        else:
+            raise KeyError("Missing required IK config key: nominal_posture_cost_torso")
+
+        if "nominal_posture_cost_arm" in cfg:
+            self.nominal_posture_cost_arm = float(cfg["nominal_posture_cost_arm"])
+        elif "nominal_posture_cost_main" in cfg:
+            self.nominal_posture_cost_arm = float(cfg["nominal_posture_cost_main"])
+        else:
+            raise KeyError("Missing required IK config key: nominal_posture_cost_arm")
+
         self.nominal_posture_cost_head = float(require("nominal_posture_cost_head"))
         self.current_posture_cost_main = float(require("current_posture_cost_main"))
         self.current_posture_cost_head = float(require("current_posture_cost_head"))
@@ -196,9 +210,15 @@ class RBY1WholeBodyIK:
         assert len(self.torso_dof_indices) == self.nominal_torso_angles.size
         assert len(self.right_arm_qpos_indices) == self.nominal_right_arm_angles.size
         assert len(self.left_arm_qpos_indices) == self.nominal_left_arm_angles.size
+        assert len(self.right_arm_dof_indices) == self.nominal_right_arm_angles.size
+        assert len(self.left_arm_dof_indices) == self.nominal_left_arm_angles.size
         assert len(self.head_qpos_indices) == self.nominal_head_angles.size
 
-        self.nominal_posture_cost_vector = np.full(self.model.nv, self.nominal_posture_cost_main, dtype=float)
+        self.nominal_posture_cost_vector = np.full(
+            self.model.nv, self.nominal_posture_cost_arm, dtype=float
+        )
+        for dof_idx in self.torso_dof_indices:
+            self.nominal_posture_cost_vector[dof_idx] = self.nominal_posture_cost_torso
         for dof_idx in self.head_dof_indices:
             self.nominal_posture_cost_vector[dof_idx] = self.nominal_posture_cost_head
 
@@ -265,20 +285,26 @@ class RBY1WholeBodyIK:
         # Left arm joints (controlled by IK)
         self.left_arm_joint_names = [f"left_arm_{i}" for i in range(7)]
         self.left_arm_qpos_indices = []
+        self.left_arm_dof_indices = []
         for name in self.left_arm_joint_names:
             joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
             if joint_id >= 0:
                 qpos_adr = self.model.jnt_qposadr[joint_id]
                 self.left_arm_qpos_indices.append(qpos_adr)
+                dof_adr = self.model.jnt_dofadr[joint_id]
+                self.left_arm_dof_indices.append(dof_adr)
         
         # Right arm joints (controlled by IK)
         self.right_arm_joint_names = [f"right_arm_{i}" for i in range(7)]
         self.right_arm_qpos_indices = []
+        self.right_arm_dof_indices = []
         for name in self.right_arm_joint_names:
             joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
             if joint_id >= 0:
                 qpos_adr = self.model.jnt_qposadr[joint_id]
                 self.right_arm_qpos_indices.append(qpos_adr)
+                dof_adr = self.model.jnt_dofadr[joint_id]
+                self.right_arm_dof_indices.append(dof_adr)
 
         # Head joints
         self.head_joint_names = [f"head_{i}" for i in range(2)]
@@ -306,14 +332,14 @@ class RBY1WholeBodyIK:
         torso_angles[0] = 0.0
         torso_angles[4] = 0.0
         torso_angles[5] = 0.0
-        torso_angles[3] = -(torso_angles[1] + torso_angles[2])
+        torso_angles[3] = math.radians(8.0) - (torso_angles[1] + torso_angles[2])
 
     def _apply_torso_qpos_constraints_inplace(self, qpos: np.ndarray) -> None:
         torso_0_qpos, torso_1_qpos, torso_2_qpos, torso_3_qpos, torso_4_qpos, torso_5_qpos = self.torso_qpos_indices
         qpos[torso_0_qpos] = 0.0
         qpos[torso_4_qpos] = 0.0
         qpos[torso_5_qpos] = 0.0
-        qpos[torso_3_qpos] = -(qpos[torso_1_qpos] + qpos[torso_2_qpos])
+        qpos[torso_3_qpos] = math.radians(8.0) - (qpos[torso_1_qpos] + qpos[torso_2_qpos])
 
     def _apply_torso_qvel_constraints_inplace(self, qvel: np.ndarray) -> None:
         torso_0_dof, torso_1_dof, torso_2_dof, torso_3_dof, torso_4_dof, torso_5_dof = self.torso_dof_indices
@@ -811,7 +837,6 @@ class RBY1WholeBodyIK:
             lm_damping=1e-4,
         )
         upright_matrix = np.eye(4)
-        upright_matrix[:3, 3] = [0, 0, 1.0]
         torso_upright_task.set_target(mink.SE3.from_matrix(upright_matrix))
 
         com_stability_task = mink.RelativeFrameTask(

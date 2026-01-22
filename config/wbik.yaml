@@ -4,41 +4,58 @@ model_path: "/model/rby1/rby1.xml"
 # Use the post-PR IK adjustment flow (set false to use legacy solver/tasks).
 use_ik_adjustment: true
 legacy:
-  torso_upright_ori_cost: 500
+  torso_upright_ori_cost: 10
   com_over_base_pos_cost: 10.0
   com_target_height: 0.8
-  nominal_torso_rad: [0.0, 0.7854, -1.5708, 0.7854, 0.0, 0.0]
-  nominal_right_arm_rad: [0.0, -0.0873, 0.0, -2.0944, 0.0, 0.9599, 1.5708]
-  nominal_left_arm_rad: [0.0, 0.0873, 0.0, -2.0944, 0.0, 0.9599, -1.5708]
-  nominal_head_rad: [0.0, 0.6109]
+  # nominal_torso_rad: [0.0, 0.7854, -1.5708, 0.7854, 0.0, 0.0]
+  # nominal_right_arm_rad: [0.0, -0.0873, 0.0, -2.0944, 0.0, 0.9599, 1.5708]
+  # nominal_left_arm_rad: [0.0, 0.0873, 0.0, -2.0944, 0.0, 0.9599, -1.5708]
+  # nominal_head_rad: [0.0, 0.6109]
+
+  nominal_torso_rad: [0.0, 0.488692, -0.663225, 0.4, 0.0, 0.0]
+  nominal_right_arm_rad: [0.1565909405, -0.3603406774, 0.2278003740, -2.3233823003, 0.0161442956, 1., 1.1530866769]
+  nominal_left_arm_rad: [0.1565909405, 0.3603406774, -0.2278003740, -2.3233823003, -0.0161442956, 1., -1.1530866769]
+  # nominal_head_rad: [0.0, 0.872665]
+  nominal_head_rad: [0.0, 0.785398]
 
 # Task cost weights
 ee_pos_cost: 10000
 ee_ori_cost: 10000
 head_pos_cost: 0
 head_ori_cost: [0, 10000, 10000]
-nominal_posture_cost_main: 50
+nominal_posture_cost_torso: 200
+nominal_posture_cost_arm: 10
+# nominal_posture_cost_torso: 1000 # delivery task
+# nominal_posture_cost_arm: 1000 # delivery task
 nominal_posture_cost_head: 0.0
-current_posture_cost_main: 50
+current_posture_cost_main: 10
+# current_posture_cost_main: 1000 # delivery task
 current_posture_cost_head: 0.0
 com_over_base_pos_cost: 100000.0
-com_over_base_xy_bounds: [0.08, 0.08]  # meters (|torso5_xy - base_xy| <= bound, in base frame)
-base_ground_position_cost: [50.0, 50.0, 100000.0]
-base_ground_orientation_cost: [100000.0, 100000.0, 50.0]
+# com_over_base_xy_bounds: [0.05, 0.05]  # meters (|torso5_xy - base_xy| <= bound, in base frame)
+com_over_base_xy_bounds: [0.08, 0.08]
+base_ground_position_cost: [5000.0, 5000.0, 100000.0]
+base_ground_orientation_cost: [100000.0, 100000.0, 5000.0]
 
 # Nominal/reference joint angles (radians)
-nominal_torso_rad: [0.0, 0.7854, -0.96, 0.1746, 0.0, 0.0]
-# nominal_torso_rad: [0.0, 0.7854, -0.96, 0.261799, 0.0, 0.0]
-# nominal_right_arm_rad:  [0.96, -0.7, 0.096, -2.4, 0.23, 0.187, 0.8]
-# nominal_right_arm_rad: [0.87, -0.594, 0.167, -2.18, 0.285, 0.056, 0.849]
-# nominal_right_arm_rad: [0.915, -0.562, 0.196, -2.33, 0.313, 0.184, 0.866]
-nominal_right_arm_rad: [0.892, -0.514, 0.201, -2.298, 0.329, 0.193, 0.874]
-# nominal_left_arm_rad: [0.96, 0.7, -0.096, -2.4, -0.23, 0.187, -0.8]
-# nominal_left_arm_rad: [0.87, 0.594, -0.167, -2.18, -0.285, 0.056, -0.849]
-# nominal_left_arm_rad: [0.915, 0.562, -0.196, -2.33, -0.313, 0.184, -0.866]
-nominal_left_arm_rad: [0.892, 0.514, -0.201, -2.298, -0.329, 0.193, -0.874]
-nominal_head_rad: [0.0, 0.872665]
-# nominal_head_rad: [0.0, 1.0472]
+# laundry task
+# nominal_torso_rad: [0.0, 0.7854, -0.96, 0.1746, 0.0, 0.0]
+# nominal_right_arm_rad: [0.892, -0.514, 0.201, -2.298, 0.329, 0.193, 0.874]
+# nominal_NameError: name 'math' is not defined. Did you mean: 'Path'?left_arm_rad: [0.892, 0.514, -0.201, -2.298, -0.329, 0.193, -0.874]
+# nominal_head_rad: [0.0, 0.872665]
+
+# delivery task
+# nominal_torso_rad: [0.0, 0.488692, -0.663225, 0.174533, 0.0, 0.0]
+# nominal_right_arm_rad: [0.039, -0.140, 0.273, -2.6, 0.133, 1.567, 1.363]
+# nominal_left_arm_rad: [0.039, 0.140, -0.273, -2.6, -0.133, 1.567, -1.363]
+# nominal_head_rad: [0.0, 0.523599]
+
+# picnic task
+nominal_torso_rad: [0.0, 0.5062, -0.663225, 0.35, 0.0, 0.0]
+nominal_right_arm_rad: [0.1565909405, -0.3603406774, 0.2278003740, -2.3233823003, 0.0161442956, 1.1823209419, 1.1530866769]
+nominal_left_arm_rad: [0.1565909405, 0.3603406774, -0.2278003740, -2.3233823003, -0.0161442956, 1.1823209419, -1.1530866769]
+# nominal_head_rad: [0.0, 0.872665]
+nominal_head_rad: [0.0, 0.785398]
 
 # nominal_torso_rad: [0.0, 0.558505, -1.29154, 0.733038, 0.0, 0.0]
 # nominal_right_arm_rad: [0.959931, -0.523599, 0.174533, -2.19911, 0.349066, 0, 0.872665]

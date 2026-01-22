@@ -5,20 +5,40 @@ address: "192.168.30.1:50051"
 # Robot configuration parameters
 # model_path: "/model/rby1/rby1_mocap.xml"
 model_path: "/model/rby1/rby1.xml"
-init_position:
+# init_position:    # laundry task
+#   grippers: [0.08, 0.08]
+#   torso: [0.0, 0.7854, -0.96, 0.1746, 0.0, 0.0]
+#   right_arm: [0.892, -0.514, 0.201, -2.298, 0.329, 0.193, 0.874]
+#   left_arm: [0.892, 0.514, -0.201, -2.298, -0.329, 0.193, -0.874]
+#   head: [0.0, 0.872665]
+
+init_position:    # picnic task
   grippers: [0.08, 0.08]
-  torso: [0.0, 0.7854, -0.96, 0.1746, 0.0, 0.0]
-  # torso: [0.0, 0.7854, -0.96, 0.261799, 0.0, 0.0]
-  # right_arm: [0.96, -0.7, 0.096, -2.4, 0.23, 0.187, 0.8]
-  # right_arm: [0.87, -0.594, 0.167, -2.18, 0.285, 0.056, 0.849]
-  # right_arm: [0.915, -0.562, 0.196, -2.33, 0.313, 0.184, 0.866]
-  right_arm: [0.892, -0.514, 0.201, -2.298, 0.329, 0.193, 0.874]
-  # left_arm: [0.96, 0.7, -0.096, -2.4, -0.23, 0.187, -0.8]
-  # left_arm: [0.87, 0.594, -0.167, -2.18, -0.285, 0.056, -0.849]
-  # left_arm: [0.915, 0.562, -0.196, -2.33, -0.313, 0.184, -0.866]
-  left_arm: [0.892, 0.514, -0.201, -2.298, -0.329, 0.193, -0.874]
-  head: [0.0, 0.872665]
-  # head: [0.0, 1.0472]
+  torso: [0.0, 0.5062, -0.663225, 0.35, 0.0, 0.0]
+  right_arm: [0.1565909405, -0.3603406774, 0.2278003740, -2.3233823003, 0.0161442956, 1.1823209419, 1.1530866769]
+  left_arm: [0.1565909405, 0.3603406774, -0.2278003740, -2.3233823003, -0.0161442956, 1.1823209419, -1.1530866769]
+  # head: [0.0, 0.872665]
+  head: [0.0, 0.785398]
+
+  # torso: [0.0, 0.488692, -0.663225, 0.4, 0.0, 0.0]
+  # right_arm: [0.1565909405, -0.3603406774, 0.2278003740, -2.3233823003, 0.0161442956, 1., 1.1530866769]
+  # left_arm: [0.1565909405, 0.3603406774, -0.2278003740, -2.3233823003, -0.0161442956, 1., -1.1530866769]
+  # head: [0.0, 0.785398]
+
+# init_position:
+#   grippers: [0.0, 0.0]
+#   torso: [0.0, 0.558505, -0.733038, 0.174533, 0.0, 0.0]
+#   right_arm: [0.779, -0.157, 0.504, -2.294, 0.529, 0.687, 0.996]
+#   left_arm: [0.779, 0.157, -0.504, -2.294, -0.529, 0.687, -0.996]
+#   head: [0.0, 0.523599]
+
+# init_position:  # delivery task
+#   grippers: [0.02, 0.02]
+#   torso: [0.0, 0.488692, -0.663225, 0.174533, 0.0, 0.0]
+#   right_arm: [0.039, -0.140, 0.273, -2.6, 0.133, 1.567, 1.363]
+#   left_arm: [0.039, 0.140, -0.273, -2.6, -0.133, 1.567, -1.363]
+#   head: [0.0, 0.523599]
+
 
 # When true, override init_position with legacy_init_position below.
 use_legacy_init: false
@@ -61,7 +81,7 @@ gripper:
 
 # Base control gains
 base_error_gain: [0, 0, 0]  # TRI's IK runs at 500hz and ours at 100hz, so scale the gains by 5x
-# base_velocity_gain: [0.1, 0.1, 0.1] # Might need to tune this more
+# base_velocity_gain: [0.16, 0.16, 0.18] # Might need to tune this more
 base_velocity_gain: [0.08, 0.08, 0.12]
 
 # Base reset parameters
@@ -79,14 +99,14 @@ init_position_max_step_delta: 0.005
 
 # Incremental safety limits (commands farther than these from current pose are rejected)
 incremental_safety:
-  enabled: true
-  max_translation_m: 0.35      # maximum linear delta per update
+  enabled: false
+  max_translation_m: 0.4      # maximum linear delta per update
   max_rotation_deg: 40.0       # maximum angular delta per update
 
 # End-effector force/torque safety guard (latches and freezes outputs)
 ee_wrench_safety:
-  enabled: true
-  max_force_N: 80.0
+  enabled: false
+  max_force_N: 60.0
   max_torque_Nm: 8.0
   require_valid: true
   use_calibrated_wrench: true

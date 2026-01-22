@@ -955,17 +955,18 @@ def main() -> None:
                 while not stop_event.is_set():
                     obs = robot.get_latest_observation()
                     if obs is not None:
-                        tracking_state.append(
-                            (
-                                obs.timestamp,
-                                {
-                                    "gripper_left_tf": obs.left_tf.copy(),
-                                    "gripper_right_tf": obs.right_tf.copy(),
-                                    "gripper_left_gripper_width": np.array([obs.left_width], dtype=float),
-                                    "gripper_right_gripper_width": np.array([obs.right_width], dtype=float),
-                                },
-                            )
-                        )
+                        payload = {
+                            "gripper_left_tf": obs.left_tf.copy(),
+                            "gripper_right_tf": obs.right_tf.copy(),
+                            "gripper_left_gripper_width": np.array([obs.left_width], dtype=float),
+                            "gripper_right_gripper_width": np.array([obs.right_width], dtype=float),
+                        }
+                        backend = getattr(robot, "_backend", None)
+                        if backend is not None and hasattr(backend, "get_latest_robot_state"):
+                            snapshot = backend.get_latest_robot_state()
+                            if snapshot is not None and getattr(snapshot, "is_valid", True) and hasattr(snapshot, "odom_SE2"):
+                                payload["odom_SE2"] = np.asarray(snapshot.odom_SE2, dtype=float).copy()
+                        tracking_state.append((obs.timestamp, payload))
                     if stop_event.wait(timeout=period):
                         break
             tracking_state_thread = threading.Thread(target=_state_sampler, name="tracking-state", daemon=True)
@@ -1255,17 +1256,18 @@ def main() -> None:
                     if args.plot_tracking:
                         obs = robot.get_latest_observation()
                         if obs is not None:
-                            tracking_state.append(
-                                (
-                                    obs.timestamp,
-                                    {
-                                        "gripper_left_tf": obs.left_tf.copy(),
-                                        "gripper_right_tf": obs.right_tf.copy(),
-                                        "gripper_left_gripper_width": np.array([obs.left_width], dtype=float),
-                                        "gripper_right_gripper_width": np.array([obs.right_width], dtype=float),
-                                    },
-                                )
-                            )
+                            payload = {
+                                "gripper_left_tf": obs.left_tf.copy(),
+                                "gripper_right_tf": obs.right_tf.copy(),
+                                "gripper_left_gripper_width": np.array([obs.left_width], dtype=float),
+                                "gripper_right_gripper_width": np.array([obs.right_width], dtype=float),
+                            }
+                            backend = getattr(robot, "_backend", None)
+                            if backend is not None and hasattr(backend, "get_latest_robot_state"):
+                                snapshot = backend.get_latest_robot_state()
+                                if snapshot is not None and getattr(snapshot, "is_valid", True) and hasattr(snapshot, "odom_SE2"):
+                                    payload["odom_SE2"] = np.asarray(snapshot.odom_SE2, dtype=float).copy()
+                            tracking_state.append((obs.timestamp, payload))
 
                 elapsed = time.monotonic() - start
                 wait_time = max(0.0, inference_period - elapsed)
@@ -1323,17 +1325,18 @@ def main() -> None:
                 # plotting may have already captured many states via the sampler; append the freshest one as well
                 obs = robot.get_latest_observation()
                 if obs is not None:
-                    tracking_state.append(
-                        (
-                            obs.timestamp,
-                            {
-                                "gripper_left_tf": obs.left_tf.copy(),
-                                "gripper_right_tf": obs.right_tf.copy(),
-                                "gripper_left_gripper_width": np.array([obs.left_width], dtype=float),
-                                "gripper_right_gripper_width": np.array([obs.right_width], dtype=float),
-                            },
-                        )
-                    )
+                    payload = {
+                        "gripper_left_tf": obs.left_tf.copy(),
+                        "gripper_right_tf": obs.right_tf.copy(),
+                        "gripper_left_gripper_width": np.array([obs.left_width], dtype=float),
+                        "gripper_right_gripper_width": np.array([obs.right_width], dtype=float),
+                    }
+                    backend = getattr(robot, "_backend", None)
+                    if backend is not None and hasattr(backend, "get_latest_robot_state"):
+                        snapshot = backend.get_latest_robot_state()
+                        if snapshot is not None and getattr(snapshot, "is_valid", True) and hasattr(snapshot, "odom_SE2"):
+                            payload["odom_SE2"] = np.asarray(snapshot.odom_SE2, dtype=float).copy()
+                    tracking_state.append((obs.timestamp, payload))
 
                 def _tf_pos(tf: np.ndarray) -> np.ndarray:
                     return np.asarray(tf, dtype=float).reshape(4, 4)[:3, 3]
@@ -1391,8 +1394,41 @@ def main() -> None:
                         vals.append(width_val)
                     return ts, vals
 
+                def _series_to_base_velocity(series: List[Tuple[float, Dict[str, np.ndarray]]]):
+                    series_sorted = sorted(
+                        series,
+                        key=lambda item: float(np.asarray(item[0]).ravel()[0]) if item and item[0] is not None else 0.0,
+                    )
+                    ts: List[float] = []
+                    xs: List[float] = []
+                    ys: List[float] = []
+                    yaws: List[float] = []
+                    for t, payload in series_sorted:
+                        if "odom_SE2" not in payload:
+                            continue
+                        mat = np.asarray(payload["odom_SE2"], dtype=float).reshape(3, 3)
+                        ts.append(t)
+                        xs.append(float(mat[0, 2]))
+                        ys.append(float(mat[1, 2]))
+                        yaws.append(float(np.arctan2(mat[1, 0], mat[0, 0])))
+                    if len(ts) < 2:
+                        return [], [], [], []
+                    ts_arr = np.asarray(ts, dtype=float)
+                    xs_arr = np.asarray(xs, dtype=float)
+                    ys_arr = np.asarray(ys, dtype=float)
+                    yaw_arr = np.unwrap(np.asarray(yaws, dtype=float))
+                    dt = np.diff(ts_arr)
+                    valid = dt > 1e-6
+                    if not np.any(valid):
+                        return [], [], [], []
+                    vx = np.diff(xs_arr) / dt
+                    vy = np.diff(ys_arr) / dt
+                    wz = np.diff(yaw_arr) / dt
+                    ts_mid = (ts_arr[:-1] + ts_arr[1:]) * 0.5
+                    return list(ts_mid[valid]), list(vx[valid]), list(vy[valid]), list(wz[valid])
+
                 plt.clf()
-                fig, axes = plt.subplots(4, 2, figsize=(16, 12), sharex="row")
+                fig, axes = plt.subplots(5, 2, figsize=(16, 15), sharex="row")
                 eff_list = ["left", "right"]
                 for col, eff in enumerate(eff_list):
                     ts_cmd, xs_cmd, ys_cmd, zs_cmd = _series_to_lines(tracking_cmd, eff)
@@ -1424,7 +1460,7 @@ def main() -> None:
                         if row == 0:
                             ax.set_title(f"{eff} arm")
                     # gripper widths
-                    ax_w = axes[-1][col]
+                    ax_w = axes[-2][col]
                     ts_w_cmd, vals_w_cmd = _series_to_width(tracking_cmd, eff)
                     ts_w_act, vals_w_act = _series_to_width(tracking_state, eff)
                     ts_w_exec, vals_w_exec = _series_to_width(tracking_exec, eff)
@@ -1447,8 +1483,18 @@ def main() -> None:
                     ax_w.scatter(ts_w_act, vals_w_act, s=14, alpha=0.9, marker=".", color='g', label=f"{eff} width act")
                     ax_w.set_ylabel("width")
                     ax_w.legend(loc="upper right")
+                ts_base, vx_base, vy_base, wz_base = _series_to_base_velocity(tracking_state)
+                ax_base = axes[-1][0]
+                if ts_base:
+                    ax_base.plot(ts_base, vx_base, label="vx")
+                    ax_base.plot(ts_base, vy_base, label="vy")
+                    ax_base.plot(ts_base, wz_base, label="wz")
+                    ax_base.legend(loc="upper right")
+                ax_base.set_ylabel("base vel")
+                ax_base.set_title("base")
+                axes[-1][1].axis("off")
+                axes[-2][1].set_xlabel("time (s)")
                 axes[-1][0].set_xlabel("time (s)")
-                axes[-1][1].set_xlabel("time (s)")
                 plt.tight_layout()
                 if latency_samples:
                     obs_age_vals = [s["obs_age_s"] for s in latency_samples]
