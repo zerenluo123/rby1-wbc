@@ -711,6 +711,7 @@ class RBY1PolicyRobot:
         for key in ("gripper_left_gripper_width", "gripper_right_gripper_width"):
             if key in result:
                 result[key] = self._clamp_gripper_width(float(np.asarray(result[key]).reshape(-1)[0]))
+            # print(f"gripper command {key}: {result[key]}")  # pragma: no cover - debug aid
         return result
 
     def queue_actions(self, actions: Sequence[ScheduledAction]) -> None:

@@ -288,6 +288,8 @@ def build_scheduled_actions(
                         GRIPPER_WIDTH_LIMITS[0],
                         GRIPPER_WIDTH_LIMITS[1],
                     )
+                    # print(f"gripper width offset: {gripper_width_offset}")  # pragma: no cover - debug aid
+                    # print(f"[policy] gripper left width at idx {idx}: {payload['gripper_left_gripper_width']}")
             if "gripper_right_gripper_width" in actions_tf:
                 width_series = np.asarray(actions_tf["gripper_right_gripper_width"], dtype=float)
                 if idx < width_series.shape[0]:
@@ -296,6 +298,7 @@ def build_scheduled_actions(
                         GRIPPER_WIDTH_LIMITS[0],
                         GRIPPER_WIDTH_LIMITS[1],
                     )
+                    # print(f"[policy] gripper right width at idx {idx}: {payload['gripper_right_gripper_width']}")
 
             if not payload:
                 continue
@@ -1109,6 +1112,7 @@ def main() -> None:
                 )
                 action_timestamps = np.asarray(reply.get("timestamps", []), dtype=float)
                 print(f"[policy] Received action chunk with keys: {list(actions_tf.keys())} and timestamps: {action_timestamps}")
+                # print(f"[policy] received gripper widths: left={actions_tf.get('gripper_left_gripper_width', None)}, right={actions_tf.get('gripper_right_gripper_width', None)}")
 
                 if args.plot_tracking and action_timestamps.size and anchor_timestamps is not None:
                     arm_cutoff = float(infer_end + max(args.executor_lookahead, args.arm_execution_latency, 0.0))

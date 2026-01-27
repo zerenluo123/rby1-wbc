@@ -332,14 +332,14 @@ class RBY1WholeBodyIK:
         torso_angles[0] = 0.0
         torso_angles[4] = 0.0
         torso_angles[5] = 0.0
-        torso_angles[3] = math.radians(8.0) - (torso_angles[1] + torso_angles[2])
+        torso_angles[3] = - (torso_angles[1] + torso_angles[2])
 
     def _apply_torso_qpos_constraints_inplace(self, qpos: np.ndarray) -> None:
         torso_0_qpos, torso_1_qpos, torso_2_qpos, torso_3_qpos, torso_4_qpos, torso_5_qpos = self.torso_qpos_indices
         qpos[torso_0_qpos] = 0.0
         qpos[torso_4_qpos] = 0.0
         qpos[torso_5_qpos] = 0.0
-        qpos[torso_3_qpos] = math.radians(8.0) - (qpos[torso_1_qpos] + qpos[torso_2_qpos])
+        qpos[torso_3_qpos] = - (qpos[torso_1_qpos] + qpos[torso_2_qpos])
 
     def _apply_torso_qvel_constraints_inplace(self, qvel: np.ndarray) -> None:
         torso_0_dof, torso_1_dof, torso_2_dof, torso_3_dof, torso_4_dof, torso_5_dof = self.torso_dof_indices
