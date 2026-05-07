@@ -5,14 +5,14 @@ address: "192.168.30.1:50051"
 # Robot configuration parameters
 # model_path: "/model/rby1/rby1_mocap.xml"
 model_path: "/model/rby1/rby1.xml"
-# init_position:    # laundry task
-#   grippers: [0.08, 0.08]
-#   torso: [0.0, 0.7854, -0.96, 0.1746, 0.0, 0.0]
-#   right_arm: [0.892, -0.514, 0.201, -2.298, 0.329, 0.193, 0.874]
-#   left_arm: [0.892, 0.514, -0.201, -2.298, -0.329, 0.193, -0.874]
-#   head: [0.0, 0.872665]
+init_position:    # laundry task
+  grippers: [0.08, 0.08]
+  torso: [0.0, 0.7854, -0.96, 0.1746, 0.0, 0.0]
+  right_arm: [0.892, -0.514, 0.201, -2.298, 0.329, 0.193, 0.874]
+  left_arm: [0.892, 0.514, -0.201, -2.298, -0.329, 0.193, -0.874]
+  head: [0.0, 0.872665]
 
-init_position:    # picnic task
+# init_position:    # picnic task
   # grippers: [0.07, 0.07]
   # torso: [0.0, 0.5062, -0.663225, 0.35, 0.0, 0.0]
   # right_arm: [0.1565909405, -0.3603406774, 0.2278003740, -2.3233823003, 0.0161442956, 0.785398, 1.06465]
@@ -40,17 +40,17 @@ init_position:    # picnic task
   # left_arm: [-0.1376017582, 0.4714134310, 0.1281246204, -1.4926230296, 0.5582959211, 1.1232066401, -1.7085900712]
   # head: [0.0, 0.349066]
 
-  # grippers: [0.08, 0.08]
+  # grippers: [0.2, 0.2]
   # torso: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
   # right_arm: [0.1388583953, -0.4737521722, -0.1577603111, -1.7969735446, -0.5587148001, 1.1233986263, 1.7087296976]
   # left_arm: [0.1388583953, 0.4737521722, 0.1577603111, -1.7969735446, 0.5587148001, 1.1233986263, -1.7087296976]
   # head: [0.0, 0.349066]
 
-  grippers: [0.2, 0.2]
-  torso: [0.0, 0.488692, -0.663225, 0.174533, 0.0, 0.0]
-  right_arm: [0.3201806513, -0.3470936283, 0.1155233432, -1.5017336483, -0.4354771017, -0.1328544627, 1.6790416470]
-  left_arm: [0.3201806513, 0.3470936283, -0.1155233432, -1.5017336483, 0.4354771017, -0.1328544627, -1.6790416470]
-  head: [0.0, 0.349066]
+  # grippers: [0.08, 0.08]
+  # torso: [0.0, 0.488692, -0.663225, 0.174533, 0.0, 0.0]
+  # right_arm: [0.1881639467, -0.3727848749, 0.0009599311, -1.7297085552, -0.4547978965, 0.5010840282, 1.6394924862]
+  # left_arm: [0.1881639467, 0.3727848749, -0.0009599311, -1.7297085552, 0.4547978965, 0.5010840282, -1.6394924862]
+  # head: [0.0, 0.785398]
 
   # grippers: [0.084, 0.084]
   # torso: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
@@ -79,11 +79,11 @@ init_position:    # picnic task
 #   head: [0.0, 0.523599]
 
 # init_position:  # delivery task
-#   grippers: [0.02, 0.02]
-#   torso: [0.0, 0.488692, -0.663225, 0.174533, 0.0, 0.0]
-#   right_arm: [0.039, -0.140, 0.273, -2.6, 0.133, 1.567, 1.363]
-#   left_arm: [0.039, 0.140, -0.273, -2.6, -0.133, 1.567, -1.363]
-#   head: [0.0, 0.523599]
+  # grippers: [0.0, 0.0]
+  # torso: [0.0, 0.488692, -0.663225, 0.174533, 0.0, 0.0]
+  # right_arm: [0.039, -0.140, 0.273, -2.6, 0.133, 1.567, 1.363]
+  # left_arm: [0.039, 0.140, -0.273, -2.6, -0.133, 1.567, -1.363]
+  # head: [0.0, 0.523599]
 
 
 # When true, override init_position with legacy_init_position below.
@@ -110,7 +110,7 @@ use_interpolation: true
 command_timeout_sec: 0.1
 low_pass_freq_hz: 1
 
-# Head control mode: "ik" uses whole-body IK targets; "direct_lookat" overrides head yaw/pitch.
+# Head control mode: "ik" uses whole-body IK targets; "direct_lookat" overrides head yaw/pitch; "hold_init" locks head joints to init_position.
 head_control:
   mode: "direct_lookat"
 
@@ -151,9 +151,9 @@ incremental_safety:
 
 # End-effector force/torque safety guard (latches and freezes outputs)
 ee_wrench_safety:
-  enabled: false
-  max_force_N: 60.0
-  max_torque_Nm: 8.0
+  enabled: true
+  max_force_N: 100.0
+  max_torque_Nm: 10.0
   require_valid: true
   use_calibrated_wrench: true
 

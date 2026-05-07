@@ -92,6 +92,8 @@ class RBY1WBC:
             if not isinstance(legacy_init, dict):
                 raise ValueError("legacy_init_position must be a mapping when use_legacy_init is true.")
             self.init_position = legacy_init
+        init_head = self.init_position.get("head")
+        self._head_hold_joints = None if init_head is None else np.asarray(init_head, dtype=float).reshape(-1)
         self.state_frequency_hz = require("state_frequency_hz")
         self.trajectory_frequency_hz = require("trajectory_frequency_hz")
         self.ik_frequency_hz = require("ik_frequency_hz")
@@ -732,7 +734,12 @@ class RBY1WBC:
             head_override = None
             head_pos_for_ik = head_pos
             head_quat_for_ik = head_quat
-            if self._head_control_mode == "direct_lookat" and head_lookatpoint is not None:
+            if self._head_control_mode == "hold_init" and self._head_hold_joints is not None:
+                head_override = self._head_hold_joints
+                head_pos_for_ik = None
+                head_quat_for_ik = None
+                head_lookatpoint = None
+            elif self._head_control_mode == "direct_lookat" and head_lookatpoint is not None:
                 head_override = self._compute_head_lookat_angles(current_qpos, head_lookatpoint)
                 head_pos_for_ik = None
                 head_quat_for_ik = None

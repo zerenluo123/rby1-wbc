@@ -271,7 +271,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--trajectory",
-        default=PROJECT_ROOT + "/demo/dataset_plan.pkl",
+        default=PROJECT_ROOT + "/demo/dataset_plan_waiter3.pkl",
         help="Path to a pickle file containing trajectory episodes",
     )
     parser.add_argument(
