@@ -1,5 +1,7 @@
 # Task-specific WBIK config (laundry).
-# Derived from `config/wbik.yaml` with nominal posture values set for this task.
+# Robot topology (frames, joints, collision groups) lives in model_cfg.
+model_cfg: "/model/rby1/rby1_model.yaml"
+# Optional override of model_cfg.model_path:
 model_path: "/model/rby1/rby1.xml"
 
 use_ik_adjustment: true

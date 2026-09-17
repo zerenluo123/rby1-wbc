@@ -1,0 +1,73 @@
+# R1 Pro WBIK task / solver weights. Topology is in model_cfg.
+model_cfg: "/model/r1pro/r1pro_model.yaml"
+model_path: "/model/r1pro/r1pro_2026.xml"
+
+use_ik_adjustment: true
+legacy:
+  torso_upright_ori_cost: 10
+  com_over_base_pos_cost: 10.0
+  com_target_height: 0.8
+  nominal_torso_rad: [1.02, -1.74, -0.72, 0.0]
+  nominal_right_arm_rad: [-0.43, -0.10, 0.20, -1.70, -0.80, 0.16, 0.19]
+  nominal_left_arm_rad: [-0.43, 0.10, -0.20, -1.70, 0.80, 0.16, -0.19]
+  nominal_head_rad: []
+
+# Task cost weights (same first-pass numbers as RBY1 wbik.yaml)
+ee_pos_cost: 10000
+ee_ori_cost: 10000
+head_pos_cost: 10000
+head_ori_cost: [10000, 10000, 10000]
+nominal_posture_cost_torso: 50
+nominal_posture_cost_arm: 50
+nominal_posture_cost_head: 0.0
+current_posture_cost_main: 50
+current_posture_cost_head: 0.0
+com_over_base_pos_cost: 100000.0
+com_over_base_xy_bounds: [0.08, 0.08]
+base_ground_position_cost: [50.0, 50.0, 100000.0]
+base_ground_orientation_cost: [100000.0, 100000.0, 50.0]
+
+# Nominal/reference joint angles (radians).
+# Torso 4-DoF; q3=q1+q2 (joint3 is -Y).
+# Occupancy peak [1.02, -1.63]; q2 folded just enough for 670-673 EE
+# without breaking f140. q3 = q1+q2.
+nominal_torso_rad: [1.02, -1.74, -0.72, 0.0]
+nominal_right_arm_rad: [-0.43, -0.10, 0.20, -1.70, -0.80, 0.16, 0.19]
+nominal_left_arm_rad: [-0.43, 0.10, -0.20, -1.70, 0.80, 0.16, -0.19]
+nominal_head_rad: []
+
+# Collision avoidance distances (meters)
+safety_distance: 0.01
+influence_distance: 0.02
+
+# Velocity limits
+velocity_limit_scale: 0.9
+base_xy_velocity_limit: 1.0
+base_rz_velocity_limit: 1.0
+joint_velocity_limits:
+  torso_joint1: 2.0944
+  torso_joint2: 3.1416
+  torso_joint3: 3.1416
+  torso_joint4: 0.0
+  left_arm_joint1: 3.1416
+  left_arm_joint2: 3.1416
+  left_arm_joint3: 3.1416
+  left_arm_joint4: 3.1416
+  left_arm_joint5: 6.2832
+  left_arm_joint6: 6.2832
+  left_arm_joint7: 6.2832
+  right_arm_joint1: 3.1416
+  right_arm_joint2: 3.1416
+  right_arm_joint3: 3.1416
+  right_arm_joint4: 3.1416
+  right_arm_joint5: 6.2832
+  right_arm_joint6: 6.2832
+  right_arm_joint7: 6.2832
+  left_gripper_finger_joint1: 0.0
+  left_gripper_finger_joint2: 0.0
+  right_gripper_finger_joint1: 0.0
+  right_gripper_finger_joint2: 0.0
+
+# Solver settings
+solver: "daqp"
+damping: 1.0e-6

@@ -1,7 +1,7 @@
-"""RBY1 Whole-Body IK solver using Mink library.
+"""Whole-body IK solver using Mink.
 
-This solver optimizes both base movement and joint positions to reach end-effector targets,
-while maintaining stability and upright posture constraints.
+Robot topology (frames, joints, collision groups, kinematic constraints) is
+loaded from a model yaml. Task weights and solver settings come from wbik.yaml.
 """
 import copy
 from pathlib import Path
@@ -18,6 +18,32 @@ import mink
 from mink import Limit, Constraint
 
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+DEFAULT_MODEL_CFG = "/model/rby1/rby1_model.yaml"
+
+
+def _load_yaml_mapping(path: Path) -> dict:
+    with path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle)
+    if not isinstance(data, dict):
+        raise ValueError(f"Config at {path} must be a mapping.")
+    return data
+
+
+def _resolve_project_path(path: str) -> str:
+    if path.startswith("/"):
+        return PROJECT_ROOT + path
+    return str(Path(PROJECT_ROOT) / path)
+
+
+def _expand_geom_prefixes(model: mujoco.MjModel, prefixes: list[str]) -> set[str]:
+    names: set[str] = set()
+    for geom_id in range(model.ngeom):
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
+        if not name:
+            continue
+        if any(name.startswith(prefix) for prefix in prefixes):
+            names.add(name)
+    return names
 
 class FreeJointVelocityLimit(Limit):
     model: mujoco.MjModel
@@ -64,36 +90,38 @@ class FreeJointVelocityLimit(Limit):
         h = np.hstack(( vmax_dt,  vmax_dt ))
         return Constraint(G, h)
 
-class RBY1WholeBodyIK:
-    """Whole-body IK solver for RBY1 robot using Mink optimization library.
-    
-    This solver handles:
-    - Base movement (X, Y, theta) - optimized together with joints
-    - 6 DOF torso chain
-    - Dual 7 DOF arms
-    
+class WholeBodyIK:
+    """Whole-body IK solver using Mink.
+
     Optimization priorities:
     1. End-effector target positions and orientations (highest priority)
     2. Base Z stays on ground (hard constraint)
     """
-    
+
     def __init__(self, config_path: str = PROJECT_ROOT + "/config/wbik.yaml"):
-        """Initialize RBY1 whole-body IK solver."""
+        """Initialize the whole-body IK solver from a task yaml."""
         try:
             config_path = Path(config_path)
-            with config_path.open("r", encoding="utf-8") as f:
-                cfg = yaml.safe_load(f)
+            cfg = _load_yaml_mapping(config_path)
         except Exception as e:
             raise Exception(f"Exception while loading IK config file: {e}")
-        if not isinstance(cfg, dict):
-            raise ValueError(f"IK config at {config_path} must be a mapping.")
 
         def require(name: str):
             if name not in cfg:
                 raise KeyError(f"Missing required IK config key: {name}")
             return cfg[name]
 
-        self.model_path = PROJECT_ROOT + str(require("model_path"))
+        model_cfg_rel = cfg.get("model_cfg", DEFAULT_MODEL_CFG)
+        try:
+            self.model_cfg = _load_yaml_mapping(Path(_resolve_project_path(str(model_cfg_rel))))
+        except Exception as e:
+            raise Exception(f"Exception while loading model config file: {e}")
+
+        model_path = cfg.get("model_path", self.model_cfg.get("model_path"))
+        if not model_path:
+            raise KeyError("Missing model_path in IK config and model_cfg")
+        self.model_path = _resolve_project_path(str(model_path))
+        self._apply_model_cfg_names()
         self.ee_pos_cost = float(require("ee_pos_cost"))
         self.ee_ori_cost = float(require("ee_ori_cost"))
         self.head_pos_cost = float(require("head_pos_cost"))
@@ -183,28 +211,13 @@ class RBY1WholeBodyIK:
 
         self.model = mujoco.MjModel.from_xml_path(self.model_path)
         self.data = mujoco.MjData(self.model)
-        
-        # Store joint indices for different parts
+
         self._setup_joint_indices()
-        
-        # Fixed unprefixed names consistent with the loaded XML
-        self.base_name = "base"
-        self.torso5_name = "link_torso_5"
-        self.left_ee_name = "end_effector_l"
-        self.right_ee_name = "end_effector_r"
-        self.head_name = "head"
         self.base_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, self.base_name)
         self.torso5_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, self.torso5_name)
         self.head_site_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_SITE, self.head_name
         )
-        # Wheel link names for stability check
-        self.wheel_names = [
-            "link_wheel_fr",
-            "link_wheel_fl",
-            "link_wheel_rr",
-            "link_wheel_rl",
-        ]
 
         assert len(self.torso_qpos_indices) == self.nominal_torso_angles.size
         assert len(self.torso_dof_indices) == self.nominal_torso_angles.size
@@ -249,120 +262,147 @@ class RBY1WholeBodyIK:
                 self.data.qpos[:] = original_qpos
                 mujoco.mj_forward(self.model, self.data)
     
+    def _apply_model_cfg_names(self) -> None:
+        frames = self.model_cfg.get("frames") or {}
+        joints = self.model_cfg.get("joints") or {}
+        constraints = self.model_cfg.get("constraints") or {}
+        missing_frames = [key for key in ("base", "chest", "end_effector_l", "end_effector_r", "head") if key not in frames]
+        if missing_frames:
+            raise KeyError(f"model_cfg.frames missing keys: {missing_frames}")
+        missing_joints = [key for key in ("floating_base", "torso", "left_arm", "right_arm", "head") if key not in joints]
+        if missing_joints:
+            raise KeyError(f"model_cfg.joints missing keys: {missing_joints}")
+
+        self.base_name = str(frames["base"])
+        self.torso5_name = str(frames["chest"])
+        self.chest_name = self.torso5_name
+        self.left_ee_name = str(frames["end_effector_l"])
+        self.right_ee_name = str(frames["end_effector_r"])
+        self.head_name = str(frames["head"])
+        self.base_joint_name = str(joints["floating_base"])
+        self.torso_joint_names = [str(name) for name in joints["torso"]]
+        self.left_arm_joint_names = [str(name) for name in joints["left_arm"]]
+        self.right_arm_joint_names = [str(name) for name in joints["right_arm"]]
+        self.head_joint_names = [str(name) for name in joints.get("head") or []]
+        self.wheel_joint_names = [str(name) for name in joints.get("wheels") or []]
+        self.wheel_names = [str(name) for name in self.model_cfg.get("wheel_bodies") or []]
+        self.robot_body_names = [str(name) for name in self.model_cfg.get("robot_bodies") or []]
+        self.joint_locks = {
+            str(name): float(value) for name, value in (constraints.get("joint_locks") or {}).items()
+        }
+        self.joint_equalities = list(constraints.get("joint_equalities") or [])
+
+    def _joint_addresses(self, names: list[str], required: bool) -> tuple[list[int], list[int]]:
+        qpos_indices = []
+        dof_indices = []
+        for name in names:
+            joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            if joint_id < 0:
+                if required:
+                    raise KeyError(f"Joint {name!r} not found in {self.model_path}")
+                continue
+            qpos_indices.append(int(self.model.jnt_qposadr[joint_id]))
+            dof_indices.append(int(self.model.jnt_dofadr[joint_id]))
+        return qpos_indices, dof_indices
+
     def _setup_joint_indices(self):
         """Setup joint indices for different robot parts."""
-        # Base joint (now controlled by IK)
-        self.base_joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "world_j")
-        self.base_qpos_indices = [0, 1, 2]  # X, Y, Z positions
-        self.base_quat_indices = [3, 4, 5, 6]  # Quaternion (w, x, y, z)
-        
-        # Wheel joints (not modified by IK)
-        self.wheel_joint_names = [
-            "wheel_fr",
-            "wheel_fl",
-            "wheel_rr",
-            "wheel_rl",
-        ]
-        self.wheel_qpos_indices = []
-        for name in self.wheel_joint_names:
-            joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
-            if joint_id >= 0:
-                qpos_adr = self.model.jnt_qposadr[joint_id]
-                self.wheel_qpos_indices.append(qpos_adr)
-        
-        # Torso joints (controlled by IK)
-        self.torso_joint_names = [f"torso_{i}" for i in range(6)]
-        self.torso_qpos_indices = []
-        self.torso_dof_indices = []
-        for name in self.torso_joint_names:
-            joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
-            if joint_id >= 0:
-                qpos_adr = self.model.jnt_qposadr[joint_id]
-                self.torso_qpos_indices.append(qpos_adr)
-                dof_adr = self.model.jnt_dofadr[joint_id]
-                self.torso_dof_indices.append(dof_adr)
-        
-        # Left arm joints (controlled by IK)
-        self.left_arm_joint_names = [f"left_arm_{i}" for i in range(7)]
-        self.left_arm_qpos_indices = []
-        self.left_arm_dof_indices = []
-        for name in self.left_arm_joint_names:
-            joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
-            if joint_id >= 0:
-                qpos_adr = self.model.jnt_qposadr[joint_id]
-                self.left_arm_qpos_indices.append(qpos_adr)
-                dof_adr = self.model.jnt_dofadr[joint_id]
-                self.left_arm_dof_indices.append(dof_adr)
-        
-        # Right arm joints (controlled by IK)
-        self.right_arm_joint_names = [f"right_arm_{i}" for i in range(7)]
-        self.right_arm_qpos_indices = []
-        self.right_arm_dof_indices = []
-        for name in self.right_arm_joint_names:
-            joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
-            if joint_id >= 0:
-                qpos_adr = self.model.jnt_qposadr[joint_id]
-                self.right_arm_qpos_indices.append(qpos_adr)
-                dof_adr = self.model.jnt_dofadr[joint_id]
-                self.right_arm_dof_indices.append(dof_adr)
+        self.base_joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, self.base_joint_name)
+        if self.base_joint_id < 0:
+            raise KeyError(f"Floating-base joint {self.base_joint_name!r} not found in {self.model_path}")
+        qpos_adr = int(self.model.jnt_qposadr[self.base_joint_id])
+        self.base_qpos_indices = [qpos_adr, qpos_adr + 1, qpos_adr + 2]
+        self.base_quat_indices = [qpos_adr + 3, qpos_adr + 4, qpos_adr + 5, qpos_adr + 6]
 
-        # Head joints
-        self.head_joint_names = [f"head_{i}" for i in range(2)]
-        self.head_qpos_indices = []
-        self.head_dof_indices = []
-        for name in self.head_joint_names:
+        self.wheel_qpos_indices, _ = self._joint_addresses(self.wheel_joint_names, required=False)
+        self.torso_qpos_indices, self.torso_dof_indices = self._joint_addresses(
+            self.torso_joint_names, required=False
+        )
+        self.left_arm_qpos_indices, self.left_arm_dof_indices = self._joint_addresses(
+            self.left_arm_joint_names, required=False
+        )
+        self.right_arm_qpos_indices, self.right_arm_dof_indices = self._joint_addresses(
+            self.right_arm_joint_names, required=False
+        )
+        self.head_qpos_indices, self.head_dof_indices = self._joint_addresses(
+            self.head_joint_names, required=True
+        )
+
+        self._joint_qposadr = {}
+        self._joint_dofadr = {}
+        for name in (
+            list(self.joint_locks)
+            + [joint for eq in self.joint_equalities for joint in eq.get("joints", [])]
+            + self.torso_joint_names
+        ):
             joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
-            qpos_adr = self.model.jnt_qposadr[joint_id]
-            self.head_qpos_indices.append(qpos_adr)
-            dof_adr = self.model.jnt_dofadr[joint_id]
-            self.head_dof_indices.append(dof_adr)
-        
-        # All IK-controlled indices (including base now)
+            if joint_id >= 0:
+                self._joint_qposadr[name] = int(self.model.jnt_qposadr[joint_id])
+                self._joint_dofadr[name] = int(self.model.jnt_dofadr[joint_id])
+
         self.ik_controlled_indices = (
-            self.base_qpos_indices +  # Base X, Y, Z
-            self.torso_qpos_indices + 
-            self.left_arm_qpos_indices + 
-            self.right_arm_qpos_indices +
-            self.head_qpos_indices
+            self.base_qpos_indices
+            + self.torso_qpos_indices
+            + self.left_arm_qpos_indices
+            + self.right_arm_qpos_indices
+            + self.head_qpos_indices
         )
 
     def _apply_torso_angle_constraints_inplace(self, torso_angles: np.ndarray) -> None:
-        if torso_angles.shape != (6,):
-            raise ValueError(f"Expected 6 torso angles, got {torso_angles.shape}")
-        torso_angles[0] = 0.0
-        torso_angles[4] = 0.0
-        torso_angles[5] = 0.0
-        torso_angles[3] = - (torso_angles[1] + torso_angles[2])
+        expected = (len(self.torso_joint_names),)
+        if torso_angles.shape != expected:
+            raise ValueError(f"Expected {expected[0]} torso angles, got {torso_angles.shape}")
+        name_to_index = {name: idx for idx, name in enumerate(self.torso_joint_names)}
+        for name, value in self.joint_locks.items():
+            idx = name_to_index.get(name)
+            if idx is not None:
+                torso_angles[idx] = value
+        for equality in self.joint_equalities:
+            joints = [str(name) for name in equality["joints"]]
+            coeffs = [float(coeff) for coeff in equality["coeffs"]]
+            if joints[0] not in name_to_index:
+                continue
+            remainder = 0.0
+            for joint, coeff in zip(joints[1:], coeffs[1:]):
+                remainder += coeff * torso_angles[name_to_index[joint]]
+            torso_angles[name_to_index[joints[0]]] = -remainder / coeffs[0]
 
     def _apply_torso_qpos_constraints_inplace(self, qpos: np.ndarray) -> None:
-        torso_0_qpos, torso_1_qpos, torso_2_qpos, torso_3_qpos, torso_4_qpos, torso_5_qpos = self.torso_qpos_indices
-        qpos[torso_0_qpos] = 0.0
-        qpos[torso_4_qpos] = 0.0
-        qpos[torso_5_qpos] = 0.0
-        qpos[torso_3_qpos] = - (qpos[torso_1_qpos] + qpos[torso_2_qpos])
+        for name, value in self.joint_locks.items():
+            qpos[self._joint_qposadr[name]] = value
+        for equality in self.joint_equalities:
+            joints = [str(name) for name in equality["joints"]]
+            coeffs = [float(coeff) for coeff in equality["coeffs"]]
+            remainder = 0.0
+            for joint, coeff in zip(joints[1:], coeffs[1:]):
+                remainder += coeff * qpos[self._joint_qposadr[joint]]
+            qpos[self._joint_qposadr[joints[0]]] = -remainder / coeffs[0]
 
     def _apply_torso_qvel_constraints_inplace(self, qvel: np.ndarray) -> None:
-        torso_0_dof, torso_1_dof, torso_2_dof, torso_3_dof, torso_4_dof, torso_5_dof = self.torso_dof_indices
-        qvel[torso_0_dof] = 0.0
-        qvel[torso_4_dof] = 0.0
-        qvel[torso_5_dof] = 0.0
-        qvel[torso_3_dof] = -(qvel[torso_1_dof] + qvel[torso_2_dof])
+        for name in self.joint_locks:
+            qvel[self._joint_dofadr[name]] = 0.0
+        for equality in self.joint_equalities:
+            joints = [str(name) for name in equality["joints"]]
+            coeffs = [float(coeff) for coeff in equality["coeffs"]]
+            remainder = 0.0
+            for joint, coeff in zip(joints[1:], coeffs[1:]):
+                remainder += coeff * qvel[self._joint_dofadr[joint]]
+            qvel[self._joint_dofadr[joints[0]]] = -remainder / coeffs[0]
 
     def _add_torso_velocity_equalities(self, problem: qpsolvers.Problem) -> None:
-        torso_0_dof, torso_1_dof, torso_2_dof, torso_3_dof, torso_4_dof, torso_5_dof = self.torso_dof_indices
-        A = np.zeros((4, self.model.nv), dtype=float)
-        b = np.zeros((4,), dtype=float)
-
-        # Fixed joints: torso_0 == 0, torso_4 == 0, torso_5 == 0  (in velocity space)
-        A[0, torso_0_dof] = 1.0
-        A[1, torso_4_dof] = 1.0
-        A[2, torso_5_dof] = 1.0
-
-        # Coupling: torso_3 == -(torso_1 + torso_2)  =>  d3 + d1 + d2 == 0
-        A[3, torso_3_dof] = 1.0
-        A[3, torso_1_dof] = 1.0
-        A[3, torso_2_dof] = 1.0
-
+        n_rows = len(self.joint_locks) + len(self.joint_equalities)
+        if n_rows == 0:
+            return
+        A = np.zeros((n_rows, self.model.nv), dtype=float)
+        b = np.zeros((n_rows,), dtype=float)
+        row = 0
+        for name in self.joint_locks:
+            A[row, self._joint_dofadr[name]] = 1.0
+            row += 1
+        for equality in self.joint_equalities:
+            for joint, coeff in zip(equality["joints"], equality["coeffs"]):
+                A[row, self._joint_dofadr[str(joint)]] = float(coeff)
+            row += 1
         problem.A = A
         problem.b = b
 
@@ -712,17 +752,7 @@ class RBY1WholeBodyIK:
                 if body_name is None:
                     continue
                 
-                # Check if it's a known robot body name (model uses unprefixed names)
-                robot_body_names = [
-                    "base", "wheel_fr_link", "wheel_fl_link", "wheel_rr_link", "wheel_rl_link",
-                    "link_torso_0", "link_torso_1", "link_torso_2", "link_torso_3",
-                    "link_torso_4", "link_torso_5", "link_head_1", "link_head_2",
-                    "link_right_arm_0", "link_right_arm_1", "link_right_arm_2", "link_right_arm_3",
-                    "link_right_arm_4", "link_right_arm_5", "link_right_arm_6", "FT_SENSOR_R", "EE_BODY_R",
-                    "link_left_arm_0", "link_left_arm_1", "link_left_arm_2", "link_left_arm_3",
-                    "link_left_arm_4", "link_left_arm_5", "link_left_arm_6", "FT_SENSOR_L", "EE_BODY_L"
-                ]
-                is_robot_body = body_name in robot_body_names
+                is_robot_body = body_name in self.robot_body_names
                 
                 # If it's not a robot body, it's an environment collision geom
                 if not is_robot_body:
@@ -734,54 +764,26 @@ class RBY1WholeBodyIK:
 
     # Namespace detection/resolution not needed; model uses unprefixed names exclusively
 
+    def _build_collision_groups(self) -> dict[str, set[str]]:
+        groups_cfg = self.model_cfg.get("collision_groups") or {}
+        groups: dict[str, set[str]] = {}
+        for group_name, spec in groups_cfg.items():
+            prefixes = [str(prefix) for prefix in (spec or {}).get("prefixes") or []]
+            groups[str(group_name)] = _expand_geom_prefixes(self.model, prefixes)
+        return groups
+
     def _build_limits_cache(self) -> None:
         """Build once and cache all Mink limits to avoid per-solve construction overhead."""
-        # Collision avoidance limits using Mink's built-in functionality
-        base_group = {"base_col_0", "base_col_1"}
-
-        torso_0_group = {"torso_0_col_0", "torso_0_col_1"}
-        torso_1_group = {"torso_1_col_0", "torso_1_col_1", "torso_1_col_2", "torso_1_col_3", "torso_1_col_4", "torso_1_col_5", "torso_1_col_6", "torso_1_col_7", "torso_1_col_8", "torso_1_col_9", "torso_1_col_10"}
-        torso_2_group = {"torso_2_col_0", "torso_2_col_1", "torso_2_col_2", "torso_2_col_3", "torso_2_col_4", "torso_2_col_5", "torso_2_col_6", "torso_2_col_7", "torso_2_col_8", "torso_2_col_9", "torso_2_col_10"}
-        torso_4_group = {"torso_4_col_0", "torso_4_col_1", "torso_4_col_2", "torso_4_col_3"}
-        torso_5_group = {"torso_5_col_0", "torso_5_col_1", "torso_5_col_2", "torso_5_col_3", "torso_5_col_4"}
-        head_group = {"head_col_0"}
-
-        right_arm_0_group = {"right_arm_0_col_0", "right_arm_0_col_1", "right_arm_0_col_2"}
-        right_arm_1_group = {"right_arm_1_col_0"}
-        right_arm_2_group = {"right_arm_2_col_0", "right_arm_2_col_1", "right_arm_2_col_2", "right_arm_2_col_3", "right_arm_2_col_4", "right_arm_2_col_5", "right_arm_2_col_6", "right_arm_2_col_7"}
-        right_arm_3_group = {"right_arm_3_col_0", "right_arm_3_col_1", "right_arm_3_col_2", "right_arm_3_col_3"}
-        right_arm_4_group = {"right_arm_4_col_0", "right_arm_4_col_1", "right_arm_4_col_2", "right_arm_4_col_3", "right_arm_4_col_4"}
-        right_arm_5_group = {"right_arm_5_col_0", "right_arm_5_col_1", "right_arm_5_col_2"}
-        right_arm_6_group = {"right_arm_6_col_0"}
-        right_arm_7_group = {"right_arm_7_col_0", "right_wrist_cam_col_0", "right_wrist_cam_col_1", "right_wrist_cam_col_2"}
-        right_ee_group = {"right_ee_col_0", "right_ee_col_1", "right_ee_col_2", "right_ee_col_3", "right_ee_col_4", "right_finger_col_0", "right_finger_col_1"}
-
-        left_arm_0_group = {"left_arm_0_col_0", "left_arm_0_col_1", "left_arm_0_col_2"}
-        left_arm_1_group = {"left_arm_1_col_0"}
-        left_arm_2_group = {"left_arm_2_col_0", "left_arm_2_col_1", "left_arm_2_col_2", "left_arm_2_col_3", "left_arm_2_col_4", "left_arm_2_col_5", "left_arm_2_col_6", "left_arm_2_col_7"}
-        left_arm_3_group = {"left_arm_3_col_0", "left_arm_3_col_1", "left_arm_3_col_2", "left_arm_3_col_3"}
-        left_arm_4_group = {"left_arm_4_col_0", "left_arm_4_col_1", "left_arm_4_col_2", "left_arm_4_col_3", "left_arm_4_col_4"}
-        left_arm_5_group = {"left_arm_5_col_0", "left_arm_5_col_1", "left_arm_5_col_2"}
-        left_arm_6_group = {"left_arm_6_col_0"}
-        left_arm_7_group = {"left_arm_7_col_0", "left_wrist_cam_col_0", "left_wrist_cam_col_1", "left_wrist_cam_col_2"}
-        left_ee_group = {"left_ee_col_0", "left_ee_col_1", "left_ee_col_2", "left_ee_col_3", "left_ee_col_4", "left_finger_col_0", "left_finger_col_1"}
-
-        base_torso_group = base_group | torso_0_group | torso_1_group | torso_2_group | torso_4_group | torso_5_group | head_group
-        left_arm_group = left_arm_0_group | left_arm_1_group | left_arm_2_group | left_arm_3_group | left_arm_4_group | left_arm_5_group | left_arm_6_group | left_arm_7_group | left_ee_group
-        right_arm_group = right_arm_0_group | right_arm_1_group | right_arm_2_group | right_arm_3_group | right_arm_4_group | right_arm_5_group | right_arm_6_group | right_arm_7_group | right_ee_group
-
-        # Environment collision group - all robot collision geoms
-        # robot_collision_group = base_torso_group | left_arm_group | right_arm_group
-
-        # Get environment collision geoms (non-robot geoms)
-        # environment_geom_group = self._get_environment_geoms()
-
-        geom_pairs = [
-            (base_torso_group, left_arm_group),
-            (base_torso_group, right_arm_group),
-            (left_arm_group, right_arm_group),
-            # (robot_collision_group, environment_geom_group),
-        ]
+        self.collision_groups = self._build_collision_groups()
+        pair_names = self.model_cfg.get("collision_pairs") or []
+        geom_pairs = []
+        for pair in pair_names:
+            if len(pair) != 2:
+                raise ValueError(f"collision_pairs entries must have two group names, got {pair}")
+            left_name, right_name = str(pair[0]), str(pair[1])
+            if left_name not in self.collision_groups or right_name not in self.collision_groups:
+                raise KeyError(f"Unknown collision group in pair {[left_name, right_name]}")
+            geom_pairs.append((self.collision_groups[left_name], self.collision_groups[right_name]))
 
         collision_avoidance_limit = mink.CollisionAvoidanceLimit(
             model=self.model,
@@ -904,4 +906,10 @@ class RBY1WholeBodyIK:
             model=self.model,
             cost=self.current_posture_cost_vector,
         )
-        
+
+
+class RBY1WholeBodyIK(WholeBodyIK):
+    """RBY1 wrapper that defaults to config/wbik.yaml."""
+
+    def __init__(self, config_path: str = PROJECT_ROOT + "/config/wbik.yaml"):
+        super().__init__(config_path) 

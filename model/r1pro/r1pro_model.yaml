@@ -1,0 +1,82 @@
+# R1 Pro 2026 topology for WholeBodyIK. Names match r1pro_2026.xml / the source URDF.
+model_path: "/model/r1pro/r1pro_2026.xml"
+
+frames:
+  base: base_link
+  chest: torso_link4_center
+  end_effector_l: left_gripper_link_site
+  end_effector_r: right_gripper_link_site
+  head: head_link_site
+
+joints:
+  floating_base: base_link_free
+  torso: [torso_joint1, torso_joint2, torso_joint3, torso_joint4]
+  left_arm: [left_arm_joint1, left_arm_joint2, left_arm_joint3, left_arm_joint4, left_arm_joint5, left_arm_joint6, left_arm_joint7]
+  right_arm: [right_arm_joint1, right_arm_joint2, right_arm_joint3, right_arm_joint4, right_arm_joint5, right_arm_joint6, right_arm_joint7]
+  head: []
+  wheels: []
+
+collision_groups:
+  body:
+    prefixes:
+      - base_link_col
+      - torso_link1_col
+      - torso_link2_col
+      - torso_link4_col
+      - head_link_col
+  left_arm:
+    prefixes:
+      - left_arm_
+      - left_gripper_
+      - left_gmsl
+      - left_d405
+  right_arm:
+    prefixes:
+      - right_arm_
+      - right_gripper_
+      - right_gmsl
+      - right_d405
+
+collision_pairs:
+  - [body, left_arm]
+  - [body, right_arm]
+  - [left_arm, right_arm]
+
+constraints:
+  joint_locks:
+    # torso_joint4: 0.0
+    left_gripper_finger_joint1: 0.0
+    left_gripper_finger_joint2: 0.0
+    right_gripper_finger_joint1: 0.0
+    right_gripper_finger_joint2: 0.0
+  joint_equalities:
+    - joints: [torso_joint3, torso_joint1, torso_joint2]
+      coeffs: [1.0, -1.0, -1.0]
+
+# Unused by WholeBodyIK. Nominal angles live in config/wbik_r1pro.yaml
+# (nominal_torso_rad / nominal_*_arm_rad).
+# nominal:
+#   torso_joint1: 0.7854
+#   torso_joint2: -1.66
+#   torso_joint3: -0.8746
+#   torso_joint4: 0.0
+#   right_arm_joint1: 0.55
+#   left_arm_joint1: 0.55
+#   right_arm_joint2: -0.50
+#   left_arm_joint2: 0.50
+#   right_arm_joint3: -0.09
+#   left_arm_joint3: 0.09
+#   right_arm_joint4: -1.94
+#   left_arm_joint4: -1.94
+#   right_arm_joint5: -0.19
+#   left_arm_joint5: 0.19
+#   right_arm_joint6: 0.16
+#   left_arm_joint6: 0.16
+#   right_arm_joint7: 0.19
+#   left_arm_joint7: -0.19
+
+left_arm_negate_joints:
+  - 2
+  - 3
+  - 5
+  - 7
