@@ -45,6 +45,72 @@ def _expand_geom_prefixes(model: mujoco.MjModel, prefixes: list[str]) -> set[str
             names.add(name)
     return names
 
+class FrameTaskOriExclude(mink.FrameTask):
+    """EE FrameTask that zeros selected orientation Jacobian columns.
+
+    Mink residual stays ``||W (J Δq + α e)||²``. After the usual 6×nv
+    Jacobian (rows 0:3 position, 3:6 orientation), orientation rows at
+    the listed dofs are set to 0 so ori cannot drive those joints.
+    Position rows are unchanged.
+    """
+
+    def __init__(self, *args, ori_exclude_dofs=(), **kwargs):
+        super().__init__(*args, **kwargs)
+        self._ori_exclude_dofs = np.asarray(list(ori_exclude_dofs), dtype=int)
+
+    def _zero_ori_columns(self, jacobian: np.ndarray) -> np.ndarray:
+        if self._ori_exclude_dofs.size == 0:
+            return jacobian
+        jacobian = np.array(jacobian, copy=True)
+        jacobian[3:, self._ori_exclude_dofs] = 0.0
+        return jacobian
+
+    def compute_jacobian(self, configuration) -> np.ndarray:
+        return self._zero_ori_columns(super().compute_jacobian(configuration))
+
+    def _error_and_jacobian(self, configuration):
+        error, jacobian = super()._error_and_jacobian(configuration)
+        return error, self._zero_ori_columns(jacobian)
+
+
+class JointUprightTask(mink.Task):
+    """Scalar spring ``||w (Δq_i + (q_i - q*))||²`` on one hinge.
+
+    Same Mink residual as other tasks: ``J=1``, ``e = q_i - q*``.
+    """
+
+    def __init__(
+        self,
+        dof_index: int,
+        qpos_index: int,
+        q_star: float = 0.0,
+        cost: float = 0.0,
+        error_clip: float | None = None,
+    ):
+        super().__init__(cost=np.array([float(cost)]), gain=1.0, lm_damping=0.0)
+        self.dof_index = int(dof_index)
+        self.qpos_index = int(qpos_index)
+        self.q_star = float(q_star)
+        # None = full angle error. A positive cap limits how far one solve
+        # may pull the joint, so a door opening cannot spend the velocity box.
+        self.error_clip = None if error_clip is None else float(error_clip)
+
+    def set_cost(self, cost: float) -> None:
+        self.cost[0] = max(0.0, float(cost))
+
+    def compute_error(self, configuration) -> np.ndarray:
+        error = float(configuration.q[self.qpos_index]) - self.q_star
+        clip = self.error_clip
+        if clip is not None and clip > 0.0:
+            error = float(np.clip(error, -clip, clip))
+        return np.array([error])
+
+    def compute_jacobian(self, configuration) -> np.ndarray:
+        jacobian = np.zeros((1, configuration.nv))
+        jacobian[0, self.dof_index] = 1.0
+        return jacobian
+
+
 class FreeJointVelocityLimit(Limit):
     model: mujoco.MjModel
     ang_max: np.ndarray
@@ -124,6 +190,32 @@ class WholeBodyIK:
         self._apply_model_cfg_names()
         self.ee_pos_cost = float(require("ee_pos_cost"))
         self.ee_ori_cost = float(require("ee_ori_cost"))
+        # Mink LM on EE tasks. Missing = 1e-5 (RBY1 / R1 Pro unchanged).
+        self.ee_lm_damping = float(cfg.get("ee_lm_damping", 1e-5))
+        if self.ee_lm_damping < 0.0:
+            raise ValueError("ee_lm_damping must be >= 0")
+        # Optional. Missing / empty = RBY1 / R1 Pro path (no Jacobian mask).
+        self.ee_ori_exclude_joints = [
+            str(name) for name in (cfg.get("ee_ori_exclude_joints") or [])
+        ]
+        # Step 2: Yaw upright spring. Missing / 0 = off (RBY1 / R1 Pro).
+        self.yaw_upright_cost = float(cfg.get("yaw_upright_cost", 0.0))
+        self.yaw_upright_cost_min = float(cfg.get("yaw_upright_cost_min", 0.0))
+        self.yaw_upright_gate_eps = float(cfg.get("yaw_upright_gate_eps", 0.0))
+        self.yaw_upright_z_ref = (
+            float(cfg["yaw_upright_z_ref"]) if "yaw_upright_z_ref" in cfg else None
+        )
+        # Optional rad cap on the spring error per solve. Missing = no cap
+        # (RBY1 / R1 Pro). Does not change the hold once |q - q*| is inside it.
+        if "yaw_upright_error_clip" in cfg and cfg["yaw_upright_error_clip"] is not None:
+            self.yaw_upright_error_clip = float(cfg["yaw_upright_error_clip"])
+            if self.yaw_upright_error_clip < 0.0:
+                raise ValueError("yaw_upright_error_clip must be >= 0")
+        else:
+            self.yaw_upright_error_clip = None
+        self.yaw_upright_joints = [str(name) for name in (cfg.get("yaw_upright_joints") or [])]
+        if self.yaw_upright_cost > 0.0 and not self.yaw_upright_joints:
+            self.yaw_upright_joints = ["Yaw_Joint"]
         self.head_pos_cost = float(require("head_pos_cost"))
         self.head_ori_cost = np.asarray(require("head_ori_cost"), dtype=float)
         self.use_ik_adjustment = bool(cfg.get("use_ik_adjustment", True))
@@ -150,6 +242,14 @@ class WholeBodyIK:
         self.nominal_posture_cost_head = float(require("nominal_posture_cost_head"))
         self.current_posture_cost_main = float(require("current_posture_cost_main"))
         self.current_posture_cost_head = float(require("current_posture_cost_head"))
+        # Optional split of the existing current-posture task. Missing or 0
+        # keeps current_posture_cost_main (RBY1 yaml is unchanged).
+        self.current_posture_cost_torso = self._optional_current_posture_cost(
+            cfg, "current_posture_cost_torso", self.current_posture_cost_main
+        )
+        self.current_posture_cost_arm = self._optional_current_posture_cost(
+            cfg, "current_posture_cost_arm", self.current_posture_cost_main
+        )
         if self.use_ik_adjustment:
             self.com_over_base_pos_cost = float(cfg.get("com_over_base_pos_cost", 0.0))
             self.com_over_base_xy_bounds = None
@@ -213,6 +313,18 @@ class WholeBodyIK:
         self.data = mujoco.MjData(self.model)
 
         self._setup_joint_indices()
+        self._ee_ori_exclude_dofs = self._resolve_joint_dofs(self.ee_ori_exclude_joints)
+        self._yaw_upright_qpos: list[int] = []
+        self._yaw_upright_dofs: list[int] = []
+        if self.yaw_upright_cost > 0.0:
+            self._yaw_upright_qpos, self._yaw_upright_dofs = self._resolve_joint_qpos_dofs(
+                self.yaw_upright_joints
+            )
+        # Optional: chassis origin is not on the floor (G1-D AGV). Missing =
+        # leave MuJoCo's compiled qpos (RBY1 / R1 Pro).
+        if "initial_base_z" in cfg:
+            self.data.qpos[self.base_qpos_indices[2]] = float(cfg["initial_base_z"])
+            mujoco.mj_forward(self.model, self.data)
         self.base_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, self.base_name)
         self.torso5_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, self.torso5_name)
         self.head_site_id = mujoco.mj_name2id(
@@ -236,6 +348,12 @@ class WholeBodyIK:
             self.nominal_posture_cost_vector[dof_idx] = self.nominal_posture_cost_head
 
         self.current_posture_cost_vector = np.full(self.model.nv, self.current_posture_cost_main, dtype=float)
+        if self._current_posture_split_enabled(cfg, "current_posture_cost_torso"):
+            for dof_idx in self.torso_dof_indices:
+                self.current_posture_cost_vector[dof_idx] = self.current_posture_cost_torso
+        if self._current_posture_split_enabled(cfg, "current_posture_cost_arm"):
+            for dof_idx in self.left_arm_dof_indices + self.right_arm_dof_indices:
+                self.current_posture_cost_vector[dof_idx] = self.current_posture_cost_arm
         for dof_idx in self.head_dof_indices:
             self.current_posture_cost_vector[dof_idx] = self.current_posture_cost_head
 
@@ -292,6 +410,16 @@ class WholeBodyIK:
         }
         self.joint_equalities = list(constraints.get("joint_equalities") or [])
 
+    @staticmethod
+    def _current_posture_split_enabled(cfg, key: str) -> bool:
+        return key in cfg and float(cfg[key]) != 0.0
+
+    @staticmethod
+    def _optional_current_posture_cost(cfg, key: str, fallback: float) -> float:
+        if key not in cfg or float(cfg[key]) == 0.0:
+            return float(fallback)
+        return float(cfg[key])
+
     def _joint_addresses(self, names: list[str], required: bool) -> tuple[list[int], list[int]]:
         qpos_indices = []
         dof_indices = []
@@ -304,6 +432,51 @@ class WholeBodyIK:
             qpos_indices.append(int(self.model.jnt_qposadr[joint_id]))
             dof_indices.append(int(self.model.jnt_dofadr[joint_id]))
         return qpos_indices, dof_indices
+
+    def _resolve_joint_dofs(self, names: list[str]) -> list[int]:
+        return self._resolve_joint_qpos_dofs(names)[1]
+
+    def _resolve_joint_qpos_dofs(self, names: list[str]) -> tuple[list[int], list[int]]:
+        qpos_indices = []
+        dofs = []
+        for name in names:
+            joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            if joint_id < 0:
+                raise KeyError(f"Joint {name!r} not found in {self.model_path}")
+            qpos_indices.append(int(self.model.jnt_qposadr[joint_id]))
+            dofs.append(int(self.model.jnt_dofadr[joint_id]))
+        return qpos_indices, dofs
+
+    def _joint_upright_q_star(self, name: str) -> float:
+        if name in self.torso_joint_names:
+            return float(self.nominal_torso_angles[self.torso_joint_names.index(name)])
+        return 0.0
+
+    def _ee_target_z_min(self) -> float:
+        zs = []
+        for task in (self._left_ee_task, self._right_ee_task):
+            target = getattr(task, "transform_target_to_world", None)
+            if target is None:
+                continue
+            zs.append(float(target.wxyz_xyz[6]))
+        return min(zs) if zs else float("inf")
+
+    def _yaw_upright_weight(self, _configuration) -> float:
+        """Yaw spring: full at/above z_ref, off below. Optional linear door."""
+        w_max = self.yaw_upright_cost
+        w_min = self.yaw_upright_cost_min
+        if w_max <= 0.0:
+            return 0.0
+        if self.yaw_upright_z_ref is None:
+            return w_max
+        z = self._ee_target_z_min()
+        z_ref = float(self.yaw_upright_z_ref)
+        eps = float(self.yaw_upright_gate_eps)
+        if eps <= 0.0:
+            return w_max if z >= z_ref else w_min
+        t = (z - (z_ref - eps)) / eps
+        t = min(1.0, max(0.0, t))
+        return w_min + (w_max - w_min) * t
 
     def _setup_joint_indices(self):
         """Setup joint indices for different robot parts."""
@@ -571,6 +744,10 @@ class WholeBodyIK:
             right_ee_task.set_target(mink.SE3.from_matrix(target_matrix))
             tasks.append(right_ee_task)
 
+        if self._yaw_upright_task is not None:
+            self._yaw_upright_task.set_cost(self._yaw_upright_weight(configuration))
+            tasks.append(self._yaw_upright_task)
+
         head_pos_specified = head_target_pos is not None
         head_quat_specified = head_target_quat is not None
         head_target_pos_used = None
@@ -681,7 +858,7 @@ class WholeBodyIK:
             self._apply_torso_qvel_constraints_inplace(solution_vel)
             if success:
                 self._apply_torso_qpos_constraints_inplace(solution_qpos)
-        
+
         info = {
             "success": success,
             "base_position": solution_qpos[:3].copy(),
@@ -859,22 +1036,24 @@ class WholeBodyIK:
             com_stability_task,
         ]
         
+    def _make_ee_frame_task(self, frame_name: str):
+        kwargs = dict(
+            frame_name=frame_name,
+            frame_type="site",
+            position_cost=self.ee_pos_cost,
+            orientation_cost=self.ee_ori_cost,
+            lm_damping=self.ee_lm_damping,
+        )
+        if self._ee_ori_exclude_dofs:
+            return FrameTaskOriExclude(
+                ori_exclude_dofs=self._ee_ori_exclude_dofs, **kwargs
+            )
+        return mink.FrameTask(**kwargs)
+
     def _build_reusable_tasks(self) -> None:
         """Create task objects that are re-targeted each solve."""
-        self._left_ee_task = mink.FrameTask(
-            frame_name=self.left_ee_name,
-            frame_type="site",
-            position_cost=self.ee_pos_cost,
-            orientation_cost=self.ee_ori_cost,
-            lm_damping=1e-5,
-        )
-        self._right_ee_task = mink.FrameTask(
-            frame_name=self.right_ee_name,
-            frame_type="site",
-            position_cost=self.ee_pos_cost,
-            orientation_cost=self.ee_ori_cost,
-            lm_damping=1e-5,
-        )
+        self._left_ee_task = self._make_ee_frame_task(self.left_ee_name)
+        self._right_ee_task = self._make_ee_frame_task(self.right_ee_name)
         self._head_task = mink.FrameTask(
             frame_name=self.head_name,
             frame_type="site",
@@ -906,6 +1085,16 @@ class WholeBodyIK:
             model=self.model,
             cost=self.current_posture_cost_vector,
         )
+        self._yaw_upright_task = None
+        if self._yaw_upright_dofs:
+            name = self.yaw_upright_joints[0]
+            self._yaw_upright_task = JointUprightTask(
+                dof_index=self._yaw_upright_dofs[0],
+                qpos_index=self._yaw_upright_qpos[0],
+                q_star=self._joint_upright_q_star(name),
+                cost=self.yaw_upright_cost,
+                error_clip=self.yaw_upright_error_clip,
+            )
 
 
 class RBY1WholeBodyIK(WholeBodyIK):

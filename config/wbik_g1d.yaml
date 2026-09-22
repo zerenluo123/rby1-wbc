@@ -1,0 +1,110 @@
+# G1-D WBIK task / solver weights. Topology is in model_cfg.
+# First-pass costs copy RBY1 wbik.yaml (not the tuned R1 Pro yaml).
+model_cfg: "/model/g1d/g1d_model.yaml"
+model_path: "/model/g1d/g1d.xml"
+
+use_ik_adjustment: true
+# AGV_link is mid-chassis; wheel-mesh bottoms are at z=-0.1113 when q_z=0.
+initial_base_z: 0.1113
+legacy:
+  torso_upright_ori_cost: 10
+  com_over_base_pos_cost: 10.0
+  com_target_height: 0.8
+  nominal_torso_rad: [0.05, 0.05, 0.0, 0.0]
+  nominal_right_arm_rad: [0.0, -0.25, 0.0, 0.9, 0.0, 0.0, 0.0]
+  nominal_left_arm_rad: [0.0, 0.25, 0.0, 0.9, 0.0, 0.0, 0.0]
+  nominal_head_rad: []
+
+# Task cost weights (RBY1 first-pass numbers)
+ee_pos_cost: 10000
+ee_ori_cost: 2000
+# EE Levenberg-Marquardt. μ = ee_lm_damping · ||W e||² on Δq.
+# 0.5 is the fixed G1-D value: standing reaches like frame 247 no longer
+# sign-flip. 1e-5 chatters there; 1.0 makes recovery after a large miss
+# fail for longer. Wide infeasible spans can still return no QP solution
+# and hold the last pose. See config/G1D_WBIK.md.
+ee_lm_damping: 0.5
+# Step 1: EE ori cannot drive these dofs. Pos still can. G1-D only.
+ee_ori_exclude_joints: [Yaw_Joint]
+# Step 2: Yaw upright spring. Full at/above z_ref (standing workspace);
+# off below (low hands may nod). gate_eps=0 is a hard switch; >0 is a
+# linear blend over that many metres just below z_ref (not a long tail).
+yaw_upright_cost: 4000
+yaw_upright_cost_min: 0
+yaw_upright_z_ref: 1.00
+yaw_upright_gate_eps: 0
+# Per-solve cap on the spring angle error (rad, 2 deg). Opening the door
+# unwinds leftover nod at this rate instead of saturating yaw velocity.
+yaw_upright_error_clip: 0.034906585
+
+head_pos_cost: 10000
+head_ori_cost: [10000, 10000, 10000]
+nominal_posture_cost_torso: 50
+nominal_posture_cost_arm: 50
+nominal_posture_cost_head: 0.0
+current_posture_cost_main: 50
+current_posture_cost_head: 0.0
+com_over_base_pos_cost: 0.0
+com_over_base_xy_bounds: [0.08, 0.08]
+base_ground_position_cost: [50.0, 50.0, 100000.0]
+base_ground_orientation_cost: [100000.0, 100000.0, 50.0]
+
+# Sitting / ready seed (not occupancy yet).
+# torso: [LZ_mt m, LZ_it m, Yaw_Joint rad, torso_Joint rad]
+# First two are metres despite the _rad suffix. Official G1-D default
+# from WBC_control_interface (.../unitree/g1d/robot_config.py).
+nominal_torso_rad: [0.05, 0.05, 0.0, 0.0]
+nominal_right_arm_rad: [0.0, -0.25, 0.0, 0.9, 0.0, 0.0, 0.0]
+nominal_left_arm_rad: [0.0, 0.25, 0.0, 0.9, 0.0, 0.0, 0.0]
+nominal_head_rad: []
+
+# Collision avoidance distances (meters)
+safety_distance: 0.01
+influence_distance: 0.02
+
+# Velocity limits.
+# Prismatic: URDF velocity="0.05" is already m/s — copy as-is.
+# Revolute: URDF Yaw/torso=5, arms=37. First-pass caps to the RBY1
+# π family (same as R1 Pro). Do not write 0 on a live waist axis.
+velocity_limit_scale: 0.9
+base_xy_velocity_limit: 1.0
+base_rz_velocity_limit: 1.0
+joint_velocity_limits:
+  LZ_mt_Joint: 0.05
+  LZ_it_Joint: 0.05
+  Yaw_Joint: 3.1416
+  torso_Joint: 3.1416
+  left_shoulder_pitch_joint: 3.1416
+  left_shoulder_roll_joint: 3.1416
+  left_shoulder_yaw_joint: 3.1416
+  left_elbow_joint: 3.1416
+  left_wrist_roll_joint: 6.2832
+  left_wrist_pitch_joint: 6.2832
+  left_wrist_yaw_joint: 6.2832
+  right_shoulder_pitch_joint: 3.1416
+  right_shoulder_roll_joint: 3.1416
+  right_shoulder_yaw_joint: 3.1416
+  right_elbow_joint: 3.1416
+  right_wrist_roll_joint: 6.2832
+  right_wrist_pitch_joint: 6.2832
+  right_wrist_yaw_joint: 6.2832
+  Left_Wheel_Joint: 0.0
+  Right_Wheel_Joint: 0.0
+  left_hand_thumb_0_joint: 0.0
+  left_hand_thumb_1_joint: 0.0
+  left_hand_thumb_2_joint: 0.0
+  left_hand_middle_0_joint: 0.0
+  left_hand_middle_1_joint: 0.0
+  left_hand_index_0_joint: 0.0
+  left_hand_index_1_joint: 0.0
+  right_hand_thumb_0_joint: 0.0
+  right_hand_thumb_1_joint: 0.0
+  right_hand_thumb_2_joint: 0.0
+  right_hand_middle_0_joint: 0.0
+  right_hand_middle_1_joint: 0.0
+  right_hand_index_0_joint: 0.0
+  right_hand_index_1_joint: 0.0
+
+# Solver settings
+solver: "daqp"
+damping: 1.0e-6

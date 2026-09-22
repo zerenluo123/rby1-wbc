@@ -1,0 +1,15 @@
+<mujoco model="g1d_mocap">
+  <include file="./g1d.xml"/>
+
+  <worldbody>
+    <body name="ee_l_target" mocap="true" pos="0.21 0.24 0.84">
+      <geom type="sphere" size="0.04" rgba="0.8 0.2 0.2 0.7" contype="0" conaffinity="0" group="0"/>
+    </body>
+    <body name="ee_r_target" mocap="true" pos="0.21 -0.24 0.84">
+      <geom type="sphere" size="0.04" rgba="0.8 0.2 0.2 0.7" contype="0" conaffinity="0" group="0"/>
+    </body>
+    <body name="head_target" mocap="true" pos="0.06 0.00 1.20">
+      <geom type="sphere" size="0.04" rgba="0 0.3 0.9 0.6" contype="0" conaffinity="0" group="0"/>
+    </body>
+  </worldbody>
+</mujoco>
