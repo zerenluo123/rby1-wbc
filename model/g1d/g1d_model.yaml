@@ -73,5 +73,6 @@ constraints:
     right_hand_index_1_joint: 0.0
   joint_equalities: []
 
-# Unused by WholeBodyIK. Nominal lives in config/wbik_g1d.yaml
+# Unused by WholeBodyIK. Nominal lives in config/wbik_g1d_hardgate.yaml
+# and config/wbik_g1d_shadowgate.yaml
 # (nominal_torso_rad first two entries are metres).

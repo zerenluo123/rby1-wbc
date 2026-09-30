@@ -1,9 +1,14 @@
 """MuJoCo preview for G1-D whole-body IK.
 
-Loads config/wbik_g1d.yaml → model/g1d/g1d_model.yaml.
 Drag the red mocap spheres to move the hands. Head target is shown but not
 sent to IK (same as rby1_wbik_gui.py).
+
+``--gate`` picks the Yaw_Joint nod gate from solver/ (default hard):
+
+    python scripts/g1d_wbik_gui.py                 # config/wbik_g1d_hardgate.yaml
+    python scripts/g1d_wbik_gui.py --gate shadow   # config/wbik_g1d_shadowgate.yaml
 """
+import argparse
 from pathlib import Path
 import sys
 import time
@@ -19,7 +24,7 @@ PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from rby1.whole_body_ik import WholeBodyIK
+from solver import GATES, gate_config_path
 
 _TORSO_PRINT = (
     "LZ_mt_Joint",
@@ -30,9 +35,14 @@ _TORSO_PRINT = (
 
 
 def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--gate", choices=sorted(GATES), default="hard")
+    args = ap.parse_args()
+
     model = mujoco.MjModel.from_xml_path(PROJECT_ROOT + "/model/g1d/g1d_mocap.xml")
     data = mujoco.MjData(model)
-    ik = WholeBodyIK(PROJECT_ROOT + "/config/wbik_g1d.yaml")
+    cfg_path = gate_config_path(args.gate)
+    ik = GATES[args.gate][0](cfg_path)
     if model.nq != ik.model.nq:
         raise RuntimeError(
             f"Viewer nq={model.nq} != IK nq={ik.model.nq}. "
@@ -123,9 +133,9 @@ def main():
     data.mocap_quat[head_mid] = head_nominal_quat
 
     print(
-        f"[g1d_wbik_gui] loaded wbik_g1d.yaml / g1d_model.yaml  "
+        f"[g1d_wbik_gui] loaded {Path(cfg_path).name} / g1d_model.yaml  "
         f"nq={model.nq}  chest={ik.torso5_name}  "
-        f"ee=({left_site}, {right_site})"
+        f"ee=({left_site}, {right_site})  gate={args.gate} ({type(ik).__name__})"
     )
 
     with mujoco.viewer.launch_passive(
@@ -180,6 +190,9 @@ def main():
             )
             if not success:
                 print(f"[g1d_wbik_gui] IK failed: {info}")
+            if ik.gate_info.get("event"):
+                print(f"[g1d_wbik_gui] {ik.gate_info['event'].upper()} nod "
+                      f"(Yaw_Joint {ik.gate_info['yaw_deg']:+.1f} deg)")
 
             data.qpos[:] = sol_qpos
             now = time.perf_counter()

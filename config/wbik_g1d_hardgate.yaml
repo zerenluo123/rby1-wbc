@@ -1,4 +1,8 @@
-# G1-D WBIK task / solver weights. Topology is in model_cfg.
+# G1-D WBIK task / solver weights, HARD GATE on Yaw_Joint.
+# Solver: solver/hard_gate_ik.py (HardGatedIK).
+# The shadow-gate variant is wbik_g1d_shadowgate.yaml; everything outside
+# the gate block is identical between the two files.
+# Topology is in model_cfg.
 # First-pass costs copy RBY1 wbik.yaml (not the tuned R1 Pro yaml).
 model_cfg: "/model/g1d/g1d_model.yaml"
 model_path: "/model/g1d/g1d.xml"
@@ -19,11 +23,9 @@ legacy:
 ee_pos_cost: 10000
 ee_ori_cost: 2000
 # EE Levenberg-Marquardt. μ = ee_lm_damping · ||W e||² on Δq.
-# 0.5 is the fixed G1-D value: standing reaches like frame 247 no longer
-# sign-flip. 1e-5 chatters there; 1.0 makes recovery after a large miss
-# fail for longer. Wide infeasible spans can still return no QP solution
-# and hold the last pose. See config/G1D_WBIK.md.
-ee_lm_damping: 0.5
+# 0.1 (was 0.5): loco_9 no-solution frames drop from 57 to 11. 0.5 locks
+# after a miss. 1e-5 chatters on standing reaches. Same value as the shadow gate.
+ee_lm_damping: 0.1
 # Step 1: EE ori cannot drive these dofs. Pos still can. G1-D only.
 ee_ori_exclude_joints: [Yaw_Joint]
 # Step 2: Yaw upright spring. Full at/above z_ref (standing workspace);
@@ -42,12 +44,16 @@ head_ori_cost: [10000, 10000, 10000]
 nominal_posture_cost_torso: 50
 nominal_posture_cost_arm: 50
 nominal_posture_cost_head: 0.0
+# See wbik_g1d_shadowgate.yaml. Same waist-yaw cost on both gates.
+nominal_posture_cost_waist: 300
 current_posture_cost_main: 50
 current_posture_cost_head: 0.0
 com_over_base_pos_cost: 0.0
 com_over_base_xy_bounds: [0.08, 0.08]
 base_ground_position_cost: [50.0, 50.0, 100000.0]
 base_ground_orientation_cost: [100000.0, 100000.0, 50.0]
+# See wbik_g1d_shadowgate.yaml. Same chassis rule on both gates.
+hand_forward_min: 0.30
 
 # Sitting / ready seed (not occupancy yet).
 # torso: [LZ_mt m, LZ_it m, Yaw_Joint rad, torso_Joint rad]

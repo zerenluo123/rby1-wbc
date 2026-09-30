@@ -1,6 +1,8 @@
 # G1-D WholeBodyIK 这一版
 
-只适用于 **G1-D**，配置在 `config/wbik_g1d.yaml`。RBY1（`wbik.yaml`）和 R1 Pro（`wbik_r1pro.yaml`）没有按这套改。
+只适用于 **G1-D**，配置在 `config/wbik_g1d_hardgate.yaml`（原来的 `wbik_g1d.yaml` 改名而来，内容不变）。RBY1（`wbik.yaml`）和 R1 Pro（`wbik_r1pro.yaml`）没有按这套改。
+
+本文描述的是**硬门**方案。替代它的**影子门**方案在 `config/wbik_g1d_shadowgate.yaml`，两份 yaml 除了门那一段以外完全一样。对应的求解器在本仓库 `solver/`（`hard_gate_ik.py`、`shadow_gate_ik.py`）；拖球预览用 `scripts/g1d_wbik_gui.py --gate hard|shadow`，Quest 轨迹回放对比用 WholeBodyControl 仓库的 `Hommi_WBC/replay_quest_new.py --gate hard|shadow`。影子门的来龙去脉见 `config/G1D_WBIK_ISSUES.md` 第 1 条。
 
 控制器只吃两只手的目标位姿。`dt = 0.05 s`。腰的点头轴是 `Yaw_Joint`（绕 Y，范围约 −2.5° 到 135°）。
 

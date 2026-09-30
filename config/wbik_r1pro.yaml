@@ -21,8 +21,11 @@ nominal_posture_cost_torso: 50
 nominal_posture_cost_arm: 50
 nominal_posture_cost_head: 0.0
 current_posture_cost_main: 50
+# # Optional split of current-posture (same PostureTask). Missing or 0 = main.
+current_posture_cost_torso: 100
+current_posture_cost_arm: 50
 current_posture_cost_head: 0.0
-com_over_base_pos_cost: 100000.0
+com_over_base_pos_cost: 0.0
 com_over_base_xy_bounds: [0.08, 0.08]
 base_ground_position_cost: [50.0, 50.0, 100000.0]
 base_ground_orientation_cost: [100000.0, 100000.0, 50.0]
@@ -32,8 +35,8 @@ base_ground_orientation_cost: [100000.0, 100000.0, 50.0]
 # Occupancy peak [1.02, -1.63]; q2 folded just enough for 670-673 EE
 # without breaking f140. q3 = q1+q2.
 nominal_torso_rad: [1.02, -1.74, -0.72, 0.0]
-nominal_right_arm_rad: [-0.43, -0.10, 0.20, -1.70, -0.80, 0.16, 0.19]
-nominal_left_arm_rad: [-0.43, 0.10, -0.20, -1.70, 0.80, 0.16, -0.19]
+nominal_right_arm_rad: [-0.43, -0.10, 0.20, -1.94, -0.80, 0.16, 0.19]
+nominal_left_arm_rad: [-0.43, 0.10, -0.20, -1.94, 0.80, 0.16, -0.19]
 nominal_head_rad: []
 
 # Collision avoidance distances (meters)
@@ -48,7 +51,7 @@ joint_velocity_limits:
   torso_joint1: 2.0944
   torso_joint2: 3.1416
   torso_joint3: 3.1416
-  torso_joint4: 0.0
+  torso_joint4: 3.1416
   left_arm_joint1: 3.1416
   left_arm_joint2: 3.1416
   left_arm_joint3: 3.1416

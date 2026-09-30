@@ -73,44 +73,6 @@ class FrameTaskOriExclude(mink.FrameTask):
         return error, self._zero_ori_columns(jacobian)
 
 
-class JointUprightTask(mink.Task):
-    """Scalar spring ``||w (Δq_i + (q_i - q*))||²`` on one hinge.
-
-    Same Mink residual as other tasks: ``J=1``, ``e = q_i - q*``.
-    """
-
-    def __init__(
-        self,
-        dof_index: int,
-        qpos_index: int,
-        q_star: float = 0.0,
-        cost: float = 0.0,
-        error_clip: float | None = None,
-    ):
-        super().__init__(cost=np.array([float(cost)]), gain=1.0, lm_damping=0.0)
-        self.dof_index = int(dof_index)
-        self.qpos_index = int(qpos_index)
-        self.q_star = float(q_star)
-        # None = full angle error. A positive cap limits how far one solve
-        # may pull the joint, so a door opening cannot spend the velocity box.
-        self.error_clip = None if error_clip is None else float(error_clip)
-
-    def set_cost(self, cost: float) -> None:
-        self.cost[0] = max(0.0, float(cost))
-
-    def compute_error(self, configuration) -> np.ndarray:
-        error = float(configuration.q[self.qpos_index]) - self.q_star
-        clip = self.error_clip
-        if clip is not None and clip > 0.0:
-            error = float(np.clip(error, -clip, clip))
-        return np.array([error])
-
-    def compute_jacobian(self, configuration) -> np.ndarray:
-        jacobian = np.zeros((1, configuration.nv))
-        jacobian[0, self.dof_index] = 1.0
-        return jacobian
-
-
 class FreeJointVelocityLimit(Limit):
     model: mujoco.MjModel
     ang_max: np.ndarray
@@ -194,28 +156,17 @@ class WholeBodyIK:
         self.ee_lm_damping = float(cfg.get("ee_lm_damping", 1e-5))
         if self.ee_lm_damping < 0.0:
             raise ValueError("ee_lm_damping must be >= 0")
+        # Chassis must keep at least this horizontal distance to the hand
+        # midpoint. 0 (RBY1 / R1 Pro) disables it. Already-closer poses are
+        # not pulled back; the chassis just may not get closer.
+        # See _add_hand_forward_inequality.
+        self.hand_forward_min = float(cfg.get("hand_forward_min", 0.0))
+        if self.hand_forward_min < 0.0:
+            raise ValueError("hand_forward_min must be >= 0")
         # Optional. Missing / empty = RBY1 / R1 Pro path (no Jacobian mask).
         self.ee_ori_exclude_joints = [
             str(name) for name in (cfg.get("ee_ori_exclude_joints") or [])
         ]
-        # Step 2: Yaw upright spring. Missing / 0 = off (RBY1 / R1 Pro).
-        self.yaw_upright_cost = float(cfg.get("yaw_upright_cost", 0.0))
-        self.yaw_upright_cost_min = float(cfg.get("yaw_upright_cost_min", 0.0))
-        self.yaw_upright_gate_eps = float(cfg.get("yaw_upright_gate_eps", 0.0))
-        self.yaw_upright_z_ref = (
-            float(cfg["yaw_upright_z_ref"]) if "yaw_upright_z_ref" in cfg else None
-        )
-        # Optional rad cap on the spring error per solve. Missing = no cap
-        # (RBY1 / R1 Pro). Does not change the hold once |q - q*| is inside it.
-        if "yaw_upright_error_clip" in cfg and cfg["yaw_upright_error_clip"] is not None:
-            self.yaw_upright_error_clip = float(cfg["yaw_upright_error_clip"])
-            if self.yaw_upright_error_clip < 0.0:
-                raise ValueError("yaw_upright_error_clip must be >= 0")
-        else:
-            self.yaw_upright_error_clip = None
-        self.yaw_upright_joints = [str(name) for name in (cfg.get("yaw_upright_joints") or [])]
-        if self.yaw_upright_cost > 0.0 and not self.yaw_upright_joints:
-            self.yaw_upright_joints = ["Yaw_Joint"]
         self.head_pos_cost = float(require("head_pos_cost"))
         self.head_ori_cost = np.asarray(require("head_ori_cost"), dtype=float)
         self.use_ik_adjustment = bool(cfg.get("use_ik_adjustment", True))
@@ -314,12 +265,6 @@ class WholeBodyIK:
 
         self._setup_joint_indices()
         self._ee_ori_exclude_dofs = self._resolve_joint_dofs(self.ee_ori_exclude_joints)
-        self._yaw_upright_qpos: list[int] = []
-        self._yaw_upright_dofs: list[int] = []
-        if self.yaw_upright_cost > 0.0:
-            self._yaw_upright_qpos, self._yaw_upright_dofs = self._resolve_joint_qpos_dofs(
-                self.yaw_upright_joints
-            )
         # Optional: chassis origin is not on the floor (G1-D AGV). Missing =
         # leave MuJoCo's compiled qpos (RBY1 / R1 Pro).
         if "initial_base_z" in cfg:
@@ -346,6 +291,13 @@ class WholeBodyIK:
             self.nominal_posture_cost_vector[dof_idx] = self.nominal_posture_cost_torso
         for dof_idx in self.head_dof_indices:
             self.nominal_posture_cost_vector[dof_idx] = self.nominal_posture_cost_head
+        # Optional override for the waist-yaw joint only. The shared torso cost
+        # also covers the nod and the lifts; raising those fights a real bend.
+        waist_cost = cfg.get("nominal_posture_cost_waist")
+        self.nominal_posture_cost_waist = None if waist_cost is None else float(waist_cost)
+        if self.nominal_posture_cost_waist is not None:
+            waist_dof = self._resolve_joint_qpos_dofs(["torso_Joint"])[1][0]
+            self.nominal_posture_cost_vector[waist_dof] = self.nominal_posture_cost_waist
 
         self.current_posture_cost_vector = np.full(self.model.nv, self.current_posture_cost_main, dtype=float)
         if self._current_posture_split_enabled(cfg, "current_posture_cost_torso"):
@@ -446,37 +398,6 @@ class WholeBodyIK:
             qpos_indices.append(int(self.model.jnt_qposadr[joint_id]))
             dofs.append(int(self.model.jnt_dofadr[joint_id]))
         return qpos_indices, dofs
-
-    def _joint_upright_q_star(self, name: str) -> float:
-        if name in self.torso_joint_names:
-            return float(self.nominal_torso_angles[self.torso_joint_names.index(name)])
-        return 0.0
-
-    def _ee_target_z_min(self) -> float:
-        zs = []
-        for task in (self._left_ee_task, self._right_ee_task):
-            target = getattr(task, "transform_target_to_world", None)
-            if target is None:
-                continue
-            zs.append(float(target.wxyz_xyz[6]))
-        return min(zs) if zs else float("inf")
-
-    def _yaw_upright_weight(self, _configuration) -> float:
-        """Yaw spring: full at/above z_ref, off below. Optional linear door."""
-        w_max = self.yaw_upright_cost
-        w_min = self.yaw_upright_cost_min
-        if w_max <= 0.0:
-            return 0.0
-        if self.yaw_upright_z_ref is None:
-            return w_max
-        z = self._ee_target_z_min()
-        z_ref = float(self.yaw_upright_z_ref)
-        eps = float(self.yaw_upright_gate_eps)
-        if eps <= 0.0:
-            return w_max if z >= z_ref else w_min
-        t = (z - (z_ref - eps)) / eps
-        t = min(1.0, max(0.0, t))
-        return w_min + (w_max - w_min) * t
 
     def _setup_joint_indices(self):
         """Setup joint indices for different robot parts."""
@@ -639,16 +560,62 @@ class WholeBodyIK:
         G_add = np.stack(G_rows, axis=0)
         h_add = np.asarray(h_rows, dtype=float)
 
+        self._append_inequality_rows(problem, G_add, h_add)
+
+    def _append_inequality_rows(self, problem: qpsolvers.Problem, G_add: np.ndarray, h_add: np.ndarray) -> None:
         if problem.G is None:
             problem.G = G_add
             problem.h = h_add
             return
-
         if spa.issparse(problem.G):
             problem.G = spa.vstack([problem.G, spa.csc_matrix(G_add)])
         else:
             problem.G = np.vstack([problem.G, G_add])
         problem.h = np.hstack([problem.h, h_add])
+
+    def _add_hand_forward_inequality(self, problem: qpsolvers.Problem) -> None:
+        """Keep the hand midpoint at least ``hand_forward_min`` ahead of the chassis.
+
+        Gap = chassis heading · (hand midpoint − chassis), horizontal. It
+        changes with base translation and with base yaw; both enter the row,
+        otherwise the chassis turns and drives under the hands anyway. A plain
+        distance is wrong here: once the hands pass behind the chassis it
+        forbids backing up. One row, ``G Δq <= h``. The gap may shrink to the
+        margin; if already below it may not shrink further. Nothing pushes
+        it back out. Needs both hand targets.
+        """
+        margin = self.hand_forward_min
+        if margin <= 0.0 or self.base_body_id < 0:
+            return
+        left = getattr(self, "_hand_forward_left", None)
+        right = getattr(self, "_hand_forward_right", None)
+        if left is None or right is None:
+            return
+        mid = 0.5 * (
+            np.asarray(left, dtype=float).reshape(3)[:2]
+            + np.asarray(right, dtype=float).reshape(3)[:2]
+        )
+        rel = mid - self.data.xpos[self.base_body_id][:2]
+        fwd = self.data.xmat[self.base_body_id].reshape(3, 3)[:2, 0].copy()
+        norm = float(np.linalg.norm(fwd))
+        if norm < 1e-6:
+            return
+        fwd /= norm
+        side = np.array([-fwd[1], fwd[0]])
+        gap = float(fwd @ rel)
+        jacp = np.zeros((3, self.model.nv), dtype=float)
+        jacr = np.zeros((3, self.model.nv), dtype=float)
+        mujoco.mj_jacBody(self.model, self.data, jacp, jacr, self.base_body_id)
+        # -d(gap) = fwd·d(base) - (side·rel)·d(yaw)
+        row = (fwd[0] * jacp[0] + fwd[1] * jacp[1] - float(side @ rel) * jacr[2]).reshape(1, -1)
+        self._append_inequality_rows(problem, row, np.array([max(gap - margin, 0.0)]))
+
+    def _extra_tasks(self, configuration) -> list:
+        """Subclass hook: tasks added right after the EE tasks. EE targets are set."""
+        return []
+
+    def _add_extra_inequalities(self, problem: qpsolvers.Problem) -> None:
+        """Subclass hook: extra ``G dq <= h`` rows, after the CoM box."""
 
     def _get_nominal_posture(self, base_qpos: np.ndarray) -> np.ndarray:
         """Return a copy of qpos with torso and arm joints set to nominal angles."""
@@ -744,9 +711,7 @@ class WholeBodyIK:
             right_ee_task.set_target(mink.SE3.from_matrix(target_matrix))
             tasks.append(right_ee_task)
 
-        if self._yaw_upright_task is not None:
-            self._yaw_upright_task.set_cost(self._yaw_upright_weight(configuration))
-            tasks.append(self._yaw_upright_task)
+        tasks.extend(self._extra_tasks(configuration))
 
         head_pos_specified = head_target_pos is not None
         head_quat_specified = head_target_quat is not None
@@ -829,7 +794,20 @@ class WholeBodyIK:
                 problem = mink.build_ik(configuration, tasks, dt, damping, limits=limits)
                 self._add_torso_velocity_equalities(problem)
                 self._add_com_over_base_xy_inequalities(problem)
+                self._hand_forward_left = left_target_pos
+                self._hand_forward_right = right_target_pos
+                self._add_hand_forward_inequality(problem)
+                self._add_extra_inequalities(problem)
                 result = qpsolvers.solve_problem(problem, solver=solver)
+                if not result.found:
+                    # daqp can report a feasible QP (dq = 0 satisfies every
+                    # row) as infeasible when the objective is ~1e10. The same
+                    # QP with the objective scaled down solves; the minimiser
+                    # does not depend on that scale.
+                    scale = 1.0 / max(float(np.abs(problem.P.diagonal()).max()), 1.0)
+                    problem.P = problem.P * scale
+                    problem.q = problem.q * scale
+                    result = qpsolvers.solve_problem(problem, solver=solver)
                 if not result.found:
                     raise mink.NoSolutionFound(solver)
                 delta_q = result.x
@@ -1085,16 +1063,6 @@ class WholeBodyIK:
             model=self.model,
             cost=self.current_posture_cost_vector,
         )
-        self._yaw_upright_task = None
-        if self._yaw_upright_dofs:
-            name = self.yaw_upright_joints[0]
-            self._yaw_upright_task = JointUprightTask(
-                dof_index=self._yaw_upright_dofs[0],
-                qpos_index=self._yaw_upright_qpos[0],
-                q_star=self._joint_upright_q_star(name),
-                cost=self.yaw_upright_cost,
-                error_clip=self.yaw_upright_error_clip,
-            )
 
 
 class RBY1WholeBodyIK(WholeBodyIK):
